@@ -1,0 +1,27 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{F852C7A5-B6EF-4E1C-9DC9-59950172006F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "P2PChat.Server", "src\P2PChat.Server\P2PChat.Server.csproj", "{92F19F00-68F3-4BC6-8A44-C21914939446}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{92F19F00-68F3-4BC6-8A44-C21914939446}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{92F19F00-68F3-4BC6-8A44-C21914939446}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{92F19F00-68F3-4BC6-8A44-C21914939446}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{92F19F00-68F3-4BC6-8A44-C21914939446}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{92F19F00-68F3-4BC6-8A44-C21914939446} = {F852C7A5-B6EF-4E1C-9DC9-59950172006F}
+	EndGlobalSection
+EndGlobal
