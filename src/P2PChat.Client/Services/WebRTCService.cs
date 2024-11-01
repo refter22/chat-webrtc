@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.JSInterop;
 using P2PChat.Shared.Models;
 
@@ -9,13 +10,21 @@ public class WebRTCService : IAsyncDisposable
     private readonly SignalRService _signalRService;
     private readonly WebRTCState _state;
     private readonly ILogger<WebRTCService> _logger;
+    private IJSObjectReference? _webRTCModule;
+    private DotNetObjectReference<WebRTCService>? _dotNetRef;
 
     public event Action<string>? OnMessageReceived;
     public event Action? OnConnectionEstablished;
     public event Action? OnConnectionClosed;
+    public event Action<FileMetadata>? OnFileReceiveStarted;
+    public event Action<FileChunk>? OnFileChunkReceived;
+    public event Action? OnFileReceiveCompleted;
 
     public bool IsConnected => _state.IsConnected;
     public string? TargetUserId => _state.TargetUserId;
+
+    private FileMetadata? _currentFile;
+    private List<byte[]> _fileChunks = new();
 
     public WebRTCService(IJSRuntime jsRuntime, SignalRService signalRService, ILogger<WebRTCService> logger)
     {
@@ -332,4 +341,103 @@ public class WebRTCService : IAsyncDisposable
             throw;
         }
     }
+
+    public async Task<bool> SendFileAsync(IBrowserFile file)
+    {
+        try
+        {
+            if (!_state.IsConnected)
+            {
+                _logger.LogWarning("Cannot send file: WebRTC not connected");
+                return false;
+            }
+
+            var fileBytes = await GetFileBytes(file);
+            _logger.LogInformation($"File reading completed, size: {fileBytes.Length}");
+
+            var fileData = new
+            {
+                name = file.Name,
+                size = file.Size,
+                type = file.ContentType,
+                data = fileBytes
+            };
+
+            return await _jsRuntime.InvokeAsync<bool>("webrtc.sendFile", fileData);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error sending file via WebRTC");
+            return false;
+        }
+    }
+
+    private async Task<byte[]> GetFileBytes(IBrowserFile file)
+    {
+        using var stream = file.OpenReadStream(maxAllowedSize: 10485760); // 10MB
+        using var ms = new MemoryStream();
+        await stream.CopyToAsync(ms);
+        return ms.ToArray();
+    }
+
+    [JSInvokable("HandleFileStart")]
+    public Task HandleFileStart(FileMetadata metadata)
+    {
+        try
+        {
+            _currentFile = metadata;
+            _fileChunks.Clear();
+            OnFileReceiveStarted?.Invoke(metadata);
+            return Task.CompletedTask;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling file start");
+            throw;
+        }
+    }
+
+    [JSInvokable("HandleFileChunk")]
+    public Task HandleFileChunk(FileChunk chunk)
+    {
+        try
+        {
+            OnFileChunkReceived?.Invoke(chunk);
+            return Task.CompletedTask;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling file chunk");
+            throw;
+        }
+    }
+
+    [JSInvokable("HandleFileEnd")]
+    public Task HandleFileEnd()
+    {
+        try
+        {
+            OnFileReceiveCompleted?.Invoke();
+            return Task.CompletedTask;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling file end");
+            throw;
+        }
+    }
+}
+
+public class FileMetadata
+{
+    public string Name { get; set; } = "";
+    public long Size { get; set; }
+    public string MimeType { get; set; } = "";
+}
+
+public class FileChunk
+{
+    public string Data { get; set; } = "";
+    public int Index { get; set; }
+    public int Total { get; set; }
 }

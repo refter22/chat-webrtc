@@ -2,6 +2,7 @@
 @using P2PChat.Client.Services
 @using P2PChat.Shared.Models
 @using Microsoft.Extensions.Logging
+@using Microsoft.AspNetCore.Components.Forms
 @inject WebRTCService WebRTCService
 @inject SignalRService SignalRService
 @inject ILogger<Chat> Logger
@@ -41,11 +42,34 @@
                 @foreach (var message in messages)
                 {
                     <div class="message @(message.IsFromMe ? "sent" : "received")">
-                        @message.Text
+                        @if (message.IsFile)
+                        {
+                            <div class="file-message">
+                                <span class="file-icon">📎</span>
+                                <span class="file-name">@message.FileName</span>
+                                @if (message.IsReceiving)
+                                {
+                                    <div class="progress">
+                                        <div class="progress-bar" style="width: @(message.Progress)%">
+                                            @message.Progress%
+                                        </div>
+                                    </div>
+                                }
+                                @if (message.FileUrl != null)
+                                {
+                                    <a href="@message.FileUrl" download="@message.FileName">Скачать</a>
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            @message.Text
+                        }
                     </div>
                 }
             </div>
             <div class="input-area">
+                <InputFile OnChange="HandleFileSelected" class="file-input" />
                 <input @bind="newMessage" @bind:event="oninput" @onkeyup="HandleKeyPress" />
                 <button @onclick="SendMessage">Send</button>
             </div>
@@ -59,6 +83,8 @@
     private List<ChatMessage> messages = new();
     private string newMessage = "";
     private bool isWebRTCConnected;
+    private List<string?> currentFileChunks = new();
+    private int expectedChunks = 0;
 
     protected override async Task OnInitializedAsync()
     {
@@ -67,6 +93,9 @@
         SignalRService.OnSignalReceived += HandleSignalReceived;
         WebRTCService.OnMessageReceived += HandleMessageReceived;
         WebRTCService.OnConnectionEstablished += HandleWebRTCConnected;
+        WebRTCService.OnFileReceiveStarted += HandleFileReceiveStarted;
+        WebRTCService.OnFileChunkReceived += HandleFileChunk;
+        WebRTCService.OnFileReceiveCompleted += HandleFileReceiveCompleted;
 
         try
         {
@@ -166,6 +195,112 @@
         }
     }
 
+    private async Task HandleFileSelected(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            var file = e.File;
+            if (file == null) return;
+
+            var message = new ChatMessage
+            {
+                IsFromMe = true,
+                IsFile = true,
+                FileName = file.Name,
+                Progress = 0
+            };
+            messages.Add(message);
+
+            await WebRTCService.SendFileAsync(file);
+
+            var fileStream = file.OpenReadStream(maxAllowedSize: 10485760); // 10MB
+            var ms = new MemoryStream();
+            await fileStream.CopyToAsync(ms);
+            var base64 = Convert.ToBase64String(ms.ToArray());
+            message.FileUrl = $"data:{file.ContentType};base64,{base64}";
+
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error sending file");
+        }
+    }
+
+    private ChatMessage? currentFileMessage;
+
+    private void HandleFileReceiveStarted(FileMetadata metadata)
+    {
+        try
+        {
+            Logger.LogInformation($"File receive started: {metadata.Name}, size: {metadata.Size}");
+
+            currentFileMessage = new ChatMessage
+            {
+                IsFromMe = false,
+                IsFile = true,
+                FileName = metadata.Name,
+                IsReceiving = true,
+                Progress = 0,
+                FileSize = metadata.Size,
+                FileMimeType = metadata.MimeType
+            };
+            messages.Add(currentFileMessage);
+            currentFileChunks.Clear();
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error starting file receive");
+        }
+    }
+
+    private void HandleFileChunk(FileChunk chunk)
+    {
+        try
+        {
+            if (currentFileMessage == null) return;
+
+            while (currentFileChunks.Count <= chunk.Index)
+            {
+                currentFileChunks.Add(null);
+            }
+            currentFileChunks[chunk.Index] = chunk.Data;
+            expectedChunks = chunk.Total;
+
+            var progress = (double)currentFileChunks.Count(c => c != null) / expectedChunks * 100;
+            currentFileMessage.Progress = (int)progress;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error receiving file chunk");
+        }
+    }
+
+    private void HandleFileReceiveCompleted()
+    {
+        try
+        {
+            if (currentFileMessage == null) return;
+
+            var base64Data = string.Concat(currentFileChunks.Where(c => c != null));
+
+            currentFileMessage.FileUrl = $"data:{currentFileMessage.FileMimeType};base64,{base64Data}";
+            currentFileMessage.IsReceiving = false;
+
+            currentFileChunks.Clear();
+            currentFileMessage = null;
+
+            StateHasChanged();
+            Logger.LogInformation("File processing completed successfully");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error during file processing");
+        }
+    }
+
     public void Dispose()
     {
         WebRTCService.OnMessageReceived -= HandleMessageReceived;
@@ -173,11 +308,22 @@
         SignalRService.OnConnected -= HandleConnected;
         SignalRService.OnUserConnected -= HandleUserConnected;
         SignalRService.OnSignalReceived -= HandleSignalReceived;
+        WebRTCService.OnFileReceiveStarted -= HandleFileReceiveStarted;
+        WebRTCService.OnFileChunkReceived -= HandleFileChunk;
+        WebRTCService.OnFileReceiveCompleted -= HandleFileReceiveCompleted;
+        currentFileChunks.Clear();
     }
 
     private class ChatMessage
     {
         public string Text { get; set; } = "";
         public bool IsFromMe { get; set; }
+        public bool IsFile { get; set; }
+        public string? FileName { get; set; }
+        public string? FileUrl { get; set; }
+        public bool IsReceiving { get; set; }
+        public int Progress { get; set; }
+        public long FileSize { get; set; }
+        public string FileMimeType { get; set; } = "";
     }
 }
