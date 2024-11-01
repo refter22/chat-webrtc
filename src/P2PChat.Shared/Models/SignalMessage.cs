@@ -1,4 +1,4 @@
-namespace P2PChat.Server.Models;
+namespace P2PChat.Shared.Models;
 
 public class SignalMessage
 {

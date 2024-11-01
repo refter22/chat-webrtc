@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.SignalR;
 using P2PChat.Server.Services.Interfaces;
-using P2PChat.Server.Models;
+using P2PChat.Shared.Models;
 
 namespace P2PChat.Server.Hubs;
 
