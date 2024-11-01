@@ -121,3 +121,46 @@ code {
   border-radius: 4px;
   margin-bottom: 1rem;
 }
+
+.messages {
+    height: 400px;
+    overflow-y: auto;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.message {
+    margin-bottom: 0.5rem;
+    padding: 0.5rem;
+    border-radius: 4px;
+    max-width: 80%;
+}
+
+.message.local {
+    background-color: #007bff;
+    color: white;
+    margin-left: auto;
+}
+
+.message.remote {
+    background-color: #e9ecef;
+    margin-right: auto;
+}
+
+.message-time {
+    display: block;
+    font-size: 0.8rem;
+    opacity: 0.8;
+}
+
+.message-input {
+    margin-top: 1rem;
+}
+
+.user-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}

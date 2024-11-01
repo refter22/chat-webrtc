@@ -1,133 +1,183 @@
 @page "/"
+@using P2PChat.Client.Services
 @using P2PChat.Shared.Models
-@inject SignalRService SignalR
-@implements IAsyncDisposable
+@using Microsoft.Extensions.Logging
+@inject WebRTCService WebRTCService
+@inject SignalRService SignalRService
+@inject ILogger<Chat> Logger
 
-<h3>P2P Chat</h3>
-
-<div class="connection-status">
-    @if (string.IsNullOrEmpty(_userId))
+<div class="chat-container">
+    @if (!SignalRService.IsConnected)
     {
-        <button class="btn btn-primary" @onclick="Connect">Connect</button>
+        <div class="connecting">
+            <p>Connecting to server...</p>
+        </div>
+    }
+    else if (string.IsNullOrEmpty(selectedUserId))
+    {
+        <div class="user-list">
+            <h3>Connected Users (@(connectedUsers.Where(u => u != SignalRService.UserId).Count()))</h3>
+            @if (!connectedUsers.Any(u => u != SignalRService.UserId))
+            {
+                <p>Waiting for other users to connect...</p>
+            }
+            else
+            {
+                <div class="users">
+                    @foreach (var user in connectedUsers.Where(u => u != SignalRService.UserId))
+                    {
+                        <button class="user-item" @onclick="() => HandleUserClick(user)">
+                            Chat with @user
+                        </button>
+                    }
+                </div>
+            }
+        </div>
     }
     else
     {
-        <div>
-            <span>Your ID: @_userId</span>
-            <button class="btn btn-danger" @onclick="Disconnect">Disconnect</button>
+        <div class="chat">
+            <div class="messages">
+                @foreach (var message in messages)
+                {
+                    <div class="message @(message.IsFromMe ? "sent" : "received")">
+                        @message.Text
+                    </div>
+                }
+            </div>
+            <div class="input-area">
+                <input @bind="newMessage" @bind:event="oninput" @onkeyup="HandleKeyPress" />
+                <button @onclick="SendMessage">Send</button>
+            </div>
         </div>
     }
 </div>
 
-<div class="signal-test mt-4">
-    <div class="form-group">
-        <label>Target User ID:</label>
-        <input class="form-control" @bind="_targetUserId" />
-    </div>
-
-    <div class="form-group mt-2">
-        <label>Signal Type:</label>
-        <select class="form-control" @bind="_selectedSignalType">
-            @foreach (var type in Enum.GetValues<SignalType>())
-            {
-                <option value="@type">@type</option>
-            }
-        </select>
-    </div>
-
-    <button class="btn btn-primary mt-2" @onclick="SendSignal"
-            disabled="@(string.IsNullOrEmpty(_userId))">
-        Send Signal
-    </button>
-</div>
-
-<div class="logs mt-4">
-    <h4>Logs:</h4>
-    <pre>@string.Join(Environment.NewLine, _logs)</pre>
-</div>
-
 @code {
-    private string? _userId;
-    private string _targetUserId = "";
-    private SignalType _selectedSignalType;
-    private List<string> _logs = new();
+    private HashSet<string> connectedUsers = new();
+    private string? selectedUserId;
+    private List<ChatMessage> messages = new();
+    private string newMessage = "";
+    private bool isWebRTCConnected;
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
-        SignalR.OnRegistered += HandleRegistered;
-        SignalR.OnSignalReceived += HandleSignalReceived;
-    }
+        SignalRService.OnConnected += HandleConnected;
+        SignalRService.OnUserConnected += HandleUserConnected;
+        SignalRService.OnSignalReceived += HandleSignalReceived;
+        WebRTCService.OnMessageReceived += HandleMessageReceived;
+        WebRTCService.OnConnectionEstablished += HandleWebRTCConnected;
 
-    private async Task Connect()
-    {
         try
         {
-            await SignalR.StartAsync();
-            await SignalR.Register();
-            AddLog("Connecting to server...");
+            await SignalRService.StartAsync();
         }
         catch (Exception ex)
         {
-            AddLog($"Error connecting: {ex.Message}");
+            Console.Error.WriteLine($"Failed to connect: {ex.Message}");
         }
     }
 
-    private async Task Disconnect()
+    private void HandleConnected(string userId)
     {
-        await SignalR.DisposeAsync();
-        _userId = null;
-        AddLog("Disconnected from server");
+        connectedUsers.Add(userId);
         StateHasChanged();
     }
 
-    private async Task SendSignal()
+    private void HandleUserConnected(string userId)
     {
-        if (string.IsNullOrEmpty(_targetUserId))
+        if (!connectedUsers.Contains(userId))
         {
-            AddLog("Please enter target user ID");
+            connectedUsers.Add(userId);
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandleUserClick(string userId)
+    {
+        try
+        {
+            selectedUserId = userId;
+
+            if (WebRTCService.IsConnected && WebRTCService.TargetUserId != userId)
+            {
+                await WebRTCService.DisposeAsync();
+            }
+
+            if (!WebRTCService.IsConnected || WebRTCService.TargetUserId != userId)
+            {
+                messages.Clear();
+                isWebRTCConnected = false;
+                await WebRTCService.StartConnection(userId, true);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to start chat with user: {UserId}", userId);
+            selectedUserId = null;
+        }
+    }
+
+    private void HandleSignalReceived(SignalMessage signal)
+    {
+        Console.WriteLine($"Received signal: {signal.Type}");
+    }
+
+    private void HandleMessageReceived(string message)
+    {
+        messages.Add(new ChatMessage { Text = message, IsFromMe = false });
+        StateHasChanged();
+    }
+
+    private void HandleWebRTCConnected()
+    {
+        isWebRTCConnected = true;
+        StateHasChanged();
+    }
+
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(newMessage)) return;
+
+        if (!isWebRTCConnected)
+        {
+            Logger.LogWarning("Cannot send message: WebRTC not connected");
             return;
         }
 
         try
         {
-            var signal = new SignalMessage
-            {
-                Type = _selectedSignalType,
-                Data = new { message = "Test signal" }
-            };
-
-            await SignalR.SendSignalAsync(_targetUserId, signal);
-            AddLog($"Signal sent to {_targetUserId}");
+            await WebRTCService.SendMessageAsync(newMessage);
+            messages.Add(new ChatMessage { Text = newMessage, IsFromMe = true });
+            newMessage = "";
+            StateHasChanged();
         }
         catch (Exception ex)
         {
-            AddLog($"Error sending signal: {ex.Message}");
+            Logger.LogError(ex, "Failed to send message");
         }
     }
 
-    private void HandleRegistered(string userId)
+    private async Task HandleKeyPress(KeyboardEventArgs e)
     {
-        _userId = userId;
-        AddLog($"Registered with ID: {userId}");
-        StateHasChanged();
+        if (e.Key == "Enter")
+        {
+            await SendMessage();
+        }
     }
 
-    private void HandleSignalReceived(SignalMessage signal)
+    public void Dispose()
     {
-        AddLog($"Received signal: {signal.Type}");
-        StateHasChanged();
+        WebRTCService.OnMessageReceived -= HandleMessageReceived;
+        WebRTCService.OnConnectionEstablished -= HandleWebRTCConnected;
+        SignalRService.OnConnected -= HandleConnected;
+        SignalRService.OnUserConnected -= HandleUserConnected;
+        SignalRService.OnSignalReceived -= HandleSignalReceived;
     }
 
-    private void AddLog(string message)
+    private class ChatMessage
     {
-        _logs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {message}");
-        StateHasChanged();
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        SignalR.OnRegistered -= HandleRegistered;
-        SignalR.OnSignalReceived -= HandleSignalReceived;
-        await SignalR.DisposeAsync();
+        public string Text { get; set; } = "";
+        public bool IsFromMe { get; set; }
     }
 }

@@ -1,71 +1,110 @@
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.AspNetCore.Components;
+using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.Http.Connections;
 using P2PChat.Shared.Models;
 
 namespace P2PChat.Client.Services;
 
 public class SignalRService : IAsyncDisposable
 {
+    private readonly IConfiguration _configuration;
     private HubConnection? _hubConnection;
-    private readonly string _hubUrl;
-    private string? _userId;
-
-    public event Action<string>? OnRegistered;
+    private readonly NavigationManager _navigationManager;
+    private readonly ILogger<SignalRService> _logger;
+    public string? UserId { get; private set; }
+    public SignalMessage? CurrentSignal { get; private set; }
+    public event Action<string>? OnConnected;
     public event Action<SignalMessage>? OnSignalReceived;
+    public event Action<string>? OnUserConnected;
 
-    public SignalRService(IConfiguration configuration)
+    public SignalRService(IConfiguration configuration, NavigationManager navigationManager, ILogger<SignalRService> logger)
     {
-        //TODO: вынести в конфиг
-        _hubUrl = "http://localhost:5056/signaling";
+        _configuration = configuration;
+        _navigationManager = navigationManager;
+        _logger = logger;
     }
 
     public async Task StartAsync()
     {
-        if (_hubConnection is not null)
-            return;
+        if (_hubConnection != null) return;
+
+        var hubUrl = Environment.GetEnvironmentVariable("SIGNALR_HUB_URL")
+            ?? _configuration["SIGNALR_HUB_URL"]
+            ?? "http://localhost:5056/signaling";
 
         _hubConnection = new HubConnectionBuilder()
-            .WithUrl(_hubUrl, options =>
+            .WithUrl(hubUrl, options =>
             {
                 options.SkipNegotiation = true;
-                options.Transports = Microsoft.AspNetCore.Http.Connections.HttpTransportType.WebSockets;
+                options.Transports = HttpTransportType.WebSockets;
             })
+            .WithAutomaticReconnect()
             .Build();
 
         _hubConnection.On<string>("Registered", userId =>
         {
-            _userId = userId;
-            OnRegistered?.Invoke(userId);
+            UserId = userId;
+            OnConnected?.Invoke(userId);
         });
 
-        _hubConnection.On<SignalMessage>("ReceiveSignal", signal =>
+        _hubConnection.On<string>("UserConnected", userId =>
         {
-            OnSignalReceived?.Invoke(signal);
+            OnUserConnected?.Invoke(userId);
         });
 
-        await _hubConnection.StartAsync();
-    }
+        _hubConnection.On<SignalMessage>("ReceiveSignal", HandleSignalReceived);
 
-    public async Task Register()
-    {
-        if (_hubConnection is null)
-            throw new InvalidOperationException("Connection not started");
-
-        await _hubConnection.InvokeAsync("Register");
+        try
+        {
+            await _hubConnection.StartAsync();
+            await _hubConnection.InvokeAsync("Register");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to start SignalR connection");
+            throw;
+        }
     }
 
     public async Task SendSignalAsync(string targetUserId, SignalMessage signal)
     {
-        if (_hubConnection is null)
-            throw new InvalidOperationException("Connection not started");
+        try
+        {
+            if (_hubConnection == null)
+            {
+                throw new InvalidOperationException("Hub connection is not initialized");
+            }
 
-        await _hubConnection.InvokeAsync("RelaySignal", targetUserId, signal);
+            await _hubConnection.InvokeAsync("RelaySignal", targetUserId, signal);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send signal");
+            throw;
+        }
     }
+
+    public bool IsConnected => _hubConnection?.State == HubConnectionState.Connected;
 
     public async ValueTask DisposeAsync()
     {
-        if (_hubConnection is not null)
+        if (_hubConnection != null)
         {
             await _hubConnection.DisposeAsync();
+        }
+    }
+
+    private void HandleSignalReceived(SignalMessage signal)
+    {
+        try
+        {
+            CurrentSignal = signal;
+            OnSignalReceived?.Invoke(signal);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling signal");
         }
     }
 }

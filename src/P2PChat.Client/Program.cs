@@ -8,5 +8,6 @@ builder.RootComponents.Add<App>("#app");
 builder.RootComponents.Add<HeadOutlet>("head::after");
 
 builder.Services.AddScoped<SignalRService>();
+builder.Services.AddScoped<WebRTCService>();
 
 await builder.Build().RunAsync();

@@ -16,4 +16,8 @@
     <ProjectReference Include="..\P2PChat.Shared\P2PChat.Shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="wwwroot\js\webrtc.js" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
