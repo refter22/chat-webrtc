@@ -1,0 +1,133 @@
+@page "/"
+@using P2PChat.Shared.Models
+@inject SignalRService SignalR
+@implements IAsyncDisposable
+
+<h3>P2P Chat</h3>
+
+<div class="connection-status">
+    @if (string.IsNullOrEmpty(_userId))
+    {
+        <button class="btn btn-primary" @onclick="Connect">Connect</button>
+    }
+    else
+    {
+        <div>
+            <span>Your ID: @_userId</span>
+            <button class="btn btn-danger" @onclick="Disconnect">Disconnect</button>
+        </div>
+    }
+</div>
+
+<div class="signal-test mt-4">
+    <div class="form-group">
+        <label>Target User ID:</label>
+        <input class="form-control" @bind="_targetUserId" />
+    </div>
+
+    <div class="form-group mt-2">
+        <label>Signal Type:</label>
+        <select class="form-control" @bind="_selectedSignalType">
+            @foreach (var type in Enum.GetValues<SignalType>())
+            {
+                <option value="@type">@type</option>
+            }
+        </select>
+    </div>
+
+    <button class="btn btn-primary mt-2" @onclick="SendSignal"
+            disabled="@(string.IsNullOrEmpty(_userId))">
+        Send Signal
+    </button>
+</div>
+
+<div class="logs mt-4">
+    <h4>Logs:</h4>
+    <pre>@string.Join(Environment.NewLine, _logs)</pre>
+</div>
+
+@code {
+    private string? _userId;
+    private string _targetUserId = "";
+    private SignalType _selectedSignalType;
+    private List<string> _logs = new();
+
+    protected override void OnInitialized()
+    {
+        SignalR.OnRegistered += HandleRegistered;
+        SignalR.OnSignalReceived += HandleSignalReceived;
+    }
+
+    private async Task Connect()
+    {
+        try
+        {
+            await SignalR.StartAsync();
+            await SignalR.Register();
+            AddLog("Connecting to server...");
+        }
+        catch (Exception ex)
+        {
+            AddLog($"Error connecting: {ex.Message}");
+        }
+    }
+
+    private async Task Disconnect()
+    {
+        await SignalR.DisposeAsync();
+        _userId = null;
+        AddLog("Disconnected from server");
+        StateHasChanged();
+    }
+
+    private async Task SendSignal()
+    {
+        if (string.IsNullOrEmpty(_targetUserId))
+        {
+            AddLog("Please enter target user ID");
+            return;
+        }
+
+        try
+        {
+            var signal = new SignalMessage
+            {
+                Type = _selectedSignalType,
+                Data = new { message = "Test signal" }
+            };
+
+            await SignalR.SendSignalAsync(_targetUserId, signal);
+            AddLog($"Signal sent to {_targetUserId}");
+        }
+        catch (Exception ex)
+        {
+            AddLog($"Error sending signal: {ex.Message}");
+        }
+    }
+
+    private void HandleRegistered(string userId)
+    {
+        _userId = userId;
+        AddLog($"Registered with ID: {userId}");
+        StateHasChanged();
+    }
+
+    private void HandleSignalReceived(SignalMessage signal)
+    {
+        AddLog($"Received signal: {signal.Type}");
+        StateHasChanged();
+    }
+
+    private void AddLog(string message)
+    {
+        _logs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {message}");
+        StateHasChanged();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        SignalR.OnRegistered -= HandleRegistered;
+        SignalR.OnSignalReceived -= HandleSignalReceived;
+        await SignalR.DisposeAsync();
+    }
+}
