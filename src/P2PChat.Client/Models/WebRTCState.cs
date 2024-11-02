@@ -1,7 +1,7 @@
 using Microsoft.JSInterop;
-using P2PChat.Client.Services;
+using P2PChat.Client.Services.WebRTC;
 
-namespace P2PChat.Client.Services;
+namespace P2PChat.Client.Models;
 
 public class WebRTCState
 {

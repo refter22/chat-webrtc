@@ -1,8 +1,10 @@
 @page "/"
 @using P2PChat.Client.Services
+@using P2PChat.Client.Services.WebRTC
 @using P2PChat.Shared.Models
 @using Microsoft.Extensions.Logging
 @using Microsoft.AspNetCore.Components.Forms
+@using P2PChat.Client.Models
 @inject WebRTCService WebRTCService
 @inject SignalRService SignalRService
 @inject ILogger<Chat> Logger
@@ -15,67 +17,93 @@
             <p>Connecting to server...</p>
         </div>
     }
-    else if (string.IsNullOrEmpty(selectedUserId))
-    {
-        <div class="connection-form">
-            <h3>Your ID: @SignalRService.UserId</h3>
-            <p>Share this ID with someone to start chatting</p>
-
-            <div class="connect-to-user">
-                <input @bind="targetUserId" placeholder="Enter user ID to connect..." />
-                <button @onclick="HandleConnectClick" disabled="@(targetUserId == SignalRService.UserId)">
-                    Connect
-                </button>
-                @if (targetUserId == SignalRService.UserId)
-                {
-                    <div class="error-message">Cannot connect to yourself</div>
-                }
-            </div>
-        </div>
-    }
     else
     {
-        <div class="chat">
-            <div class="chat-header">
-                <span>Chatting with: @selectedUserId</span>
-                <button @onclick="HandleDisconnect">Disconnect</button>
+        <div class="chat-layout">
+            <div class="sidebar">
+                <div class="user-info">
+                    <h3>Your ID: @SignalRService.UserId</h3>
+                </div>
+
+                <div class="active-chats">
+                    @foreach (var chatId in activeChats)
+                    {
+                        <div class="chat-item @(chatId == selectedUserId ? "active" : "")"
+                             @onclick="() => SwitchChat(chatId)">
+                            <span class="chat-id">@chatId</span>
+                            @if (chatId != selectedUserId)
+                            {
+                                <button class="disconnect-btn" @onclick="@(() => RemoveChat(chatId))">×</button>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="new-chat">
+                    <input @bind="targetUserId" placeholder="Enter user ID to connect..." />
+                    <button @onclick="HandleConnectClick" disabled="@(targetUserId == SignalRService.UserId)">
+                        Connect
+                    </button>
+                    @if (targetUserId == SignalRService.UserId)
+                    {
+                        <div class="error-message">Cannot connect to yourself</div>
+                    }
+                </div>
             </div>
 
-            <div class="messages">
-                @foreach (var message in messages)
+            <div class="chat-main">
+                @if (string.IsNullOrEmpty(selectedUserId))
                 {
-                    <div class="message @(message.IsFromMe ? "sent" : "received")">
-                        @if (message.IsFile)
-                        {
-                            <div class="file-message">
-                                <span class="file-icon">📎</span>
-                                <span class="file-name">@message.FileName</span>
-                                @if (message.IsReceiving)
-                                {
-                                    <div class="progress">
-                                        <div class="progress-bar" style="width: @(message.Progress)%">
-                                            @message.Progress%
-                                        </div>
-                                    </div>
-                                }
-                                @if (message.FileUrl != null)
-                                {
-                                    <a href="@message.FileUrl" download="@message.FileName">Download</a>
-                                }
-                            </div>
-                        }
-                        else
-                        {
-                            @message.Text
-                        }
+                    <div class="no-chat-selected">
+                        <p>Select a chat or connect to new user</p>
                     </div>
                 }
-            </div>
+                else
+                {
+                    <div class="chat">
+                        <div class="chat-header">
+                            <span>Chatting with: @selectedUserId</span>
+                            <button @onclick="HandleDisconnect">Disconnect</button>
+                        </div>
 
-            <div class="input-area">
-                <InputFile OnChange="HandleFileSelected" class="file-input" />
-                <input @bind="newMessage" @bind:event="oninput" @onkeyup="HandleKeyPress" />
-                <button @onclick="SendMessage" disabled="@(!isWebRTCConnected)">Send</button>
+                        <div class="messages">
+                            @foreach (var message in GetCurrentMessages())
+                            {
+                                <div class="message @(message.IsFromMe ? "sent" : "received")">
+                                    @if (message.IsFile)
+                                    {
+                                        <div class="file-message">
+                                            <span class="file-icon">📎</span>
+                                            <span class="file-name">@message.FileName</span>
+                                            @if (message.IsReceiving)
+                                            {
+                                                <div class="progress">
+                                                    <div class="progress-bar" style="width: @(message.Progress)%">
+                                                        @message.Progress%
+                                                    </div>
+                                                </div>
+                                            }
+                                            @if (message.FileUrl != null)
+                                            {
+                                                <a href="@message.FileUrl" download="@message.FileName">Download</a>
+                                            }
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        @message.Text
+                                    }
+                                </div>
+                            }
+                        </div>
+
+                        <div class="input-area">
+                            <InputFile OnChange="HandleFileSelected" class="file-input" />
+                            <input @bind="newMessage" @bind:event="oninput" @onkeyup="HandleKeyPress" />
+                            <button @onclick="SendMessage" disabled="@(!isWebRTCConnected)">Send</button>
+                        </div>
+                    </div>
+                }
             </div>
         </div>
     }
@@ -85,32 +113,70 @@
     private string targetUserId = "";
     private string? selectedUserId;
     private bool isWebRTCConnected;
-    private List<ChatMessage> messages = new();
+    private Dictionary<string, List<ChatMessage>> chatMessages = new();
     private string newMessage = "";
     private List<string?> currentFileChunks = new();
     private int expectedChunks = 0;
+    private HashSet<string> activeChats = new();
 
     private string? myUserId => SignalRService.UserId;
+
+    private readonly List<ChatMessage> Messages = new();
+    private string _messageInput = string.Empty;
+    private string _targetUserId = string.Empty;
+    private string _connectionStatus = "Disconnected";
+    private bool _isConnected;
+    private string _errorMessage = string.Empty;
+    private IBrowserFile? _selectedFile;
+    private string _receivingFileName = string.Empty;
+    private bool _isReceivingFile;
+    private int _fileProgress;
+
+    private ChatMessage? currentFileMessage;
+
+    [Inject]
+    private WebRTCService _webRTCService { get; set; } = default!;
+
+    [Inject]
+    private SignalRService _signalRService { get; set; } = default!;
+
+    private List<ChatMessage> GetCurrentMessages()
+    {
+        if (string.IsNullOrEmpty(selectedUserId))
+            return new List<ChatMessage>();
+
+        if (!chatMessages.ContainsKey(selectedUserId))
+            chatMessages[selectedUserId] = new List<ChatMessage>();
+
+        return chatMessages[selectedUserId];
+    }
 
     protected override async Task OnInitializedAsync()
     {
         try
         {
-            WebRTCService.OnMessageReceived += HandleMessageReceived;
-            WebRTCService.OnConnectionEstablished += HandleWebRTCConnected;
-            WebRTCService.OnFileReceiveStarted += HandleFileReceiveStarted;
-            WebRTCService.OnFileChunkReceived += HandleFileChunk;
-            WebRTCService.OnFileReceiveCompleted += HandleFileReceiveCompleted;
+            _webRTCService.OnMessageReceived += HandleMessageReceived;
+            _webRTCService.OnConnectionEstablished += HandleWebRTCConnected;
+            _webRTCService.OnConnectionClosed += HandleWebRTCClosed;
+            _webRTCService.OnFileReceiveStarted += HandleFileReceiveStarted;
+            _webRTCService.OnFileChunkReceived += HandleFileChunk;
+            _webRTCService.OnFileReceiveCompleted += HandleFileReceiveCompleted;
             SignalRService.UserIdChanged += HandleUserIdChanged;
 
             await SignalRService.StartAsync();
+
+            var savedChats = await JS.InvokeAsync<string?>("localStorage.getItem", "activeChats");
+            if (!string.IsNullOrEmpty(savedChats))
+            {
+                activeChats = new HashSet<string>(savedChats.Split(','));
+            }
 
             var savedTargetId = await JS.InvokeAsync<string?>("localStorage.getItem", "targetUserId");
             if (!string.IsNullOrEmpty(savedTargetId))
             {
                 selectedUserId = savedTargetId;
                 targetUserId = savedTargetId;
-                await WebRTCService.StartConnection(savedTargetId, true);
+                await _webRTCService.StartConnection(savedTargetId, true);
             }
         }
         catch (Exception ex)
@@ -137,16 +203,18 @@
         try
         {
             selectedUserId = targetUserId;
-            messages.Clear();
+            activeChats.Add(targetUserId);
+            await SaveActiveChats();
+
             isWebRTCConnected = false;
-            await JS.InvokeVoidAsync("localStorage.setItem", "targetUserId", targetUserId);
-            await WebRTCService.StartConnection(targetUserId, true);
+            await _webRTCService.StartConnection(targetUserId, true);
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Connection failed");
             selectedUserId = null;
-            await JS.InvokeVoidAsync("localStorage.removeItem", "targetUserId");
+            activeChats.Remove(targetUserId);
+            await SaveActiveChats();
         }
     }
 
@@ -154,38 +222,163 @@
     {
         selectedUserId = null;
         targetUserId = "";
-        messages.Clear();
+        activeChats.Clear();
+        await SaveActiveChats();
         isWebRTCConnected = false;
-        await JS.InvokeVoidAsync("localStorage.removeItem", "targetUserId");
-        await WebRTCService.DisposeAsync();
+        await _webRTCService.DisposeAsync();
     }
 
-    private void HandleMessageReceived(string message)
+    private void HandleMessageReceived(string userId, string message)
     {
-        messages.Add(new ChatMessage { Text = message, IsFromMe = false });
-        StateHasChanged();
+        try
+        {
+            Logger.LogInformation($"Handling message from {userId}: {message}");
+
+            if (!chatMessages.ContainsKey(userId))
+                chatMessages[userId] = new List<ChatMessage>();
+
+            chatMessages[userId].Add(new ChatMessage
+            {
+                Text = message,
+                IsFromMe = userId == SignalRService.UserId,
+                IsFile = false,
+                Timestamp = DateTime.Now
+            });
+
+            StateHasChanged();
+
+            Logger.LogInformation($"Message added to chat. Total messages: {chatMessages[userId].Count}");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error handling received message");
+        }
     }
 
-    private void HandleWebRTCConnected()
+    private void HandleWebRTCConnected(string userId)
     {
         isWebRTCConnected = true;
         StateHasChanged();
     }
 
-    private async Task SendMessage()
+    private void HandleWebRTCClosed(string userId)
     {
-        if (string.IsNullOrWhiteSpace(newMessage)) return;
+        isWebRTCConnected = false;
+        StateHasChanged();
+    }
 
+    private void HandleFileReceiveStarted(string userId, FileMetadata metadata)
+    {
         try
         {
-            await WebRTCService.SendMessageAsync(newMessage);
-            messages.Add(new ChatMessage { Text = newMessage, IsFromMe = true });
-            newMessage = "";
+            currentFileMessage = new ChatMessage
+            {
+                Text = $"Receiving file: {metadata.Name}",
+                IsFromMe = userId == _signalRService.UserId,
+                IsFile = true,
+                FileName = metadata.Name,
+                FileSize = metadata.Size,
+                FileMimeType = metadata.MimeType,
+                IsReceiving = true,
+                Progress = 0,
+                Timestamp = DateTime.Now
+            };
+
+            GetCurrentMessages().Add(currentFileMessage);
+            currentFileChunks = new List<string?>();
             StateHasChanged();
         }
         catch (Exception ex)
         {
-            Logger.LogWarning("Cannot send message: {Error}", ex.Message);
+            Logger.LogError(ex, "File receive failed");
+        }
+    }
+
+    private void HandleFileChunk(string userId, FileChunk chunk)
+    {
+        try
+        {
+            if (currentFileMessage == null) return;
+
+            while (currentFileChunks.Count <= chunk.Index)
+            {
+                currentFileChunks.Add(null);
+            }
+            currentFileChunks[chunk.Index] = chunk.Data;
+            expectedChunks = chunk.Total;
+
+            currentFileMessage.Progress = (chunk.Index + 1) * 100 / chunk.Total;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "File chunk processing failed");
+        }
+    }
+
+    private void HandleFileReceiveCompleted(string userId)
+    {
+        try
+        {
+            if (currentFileMessage == null) return;
+
+            var base64Data = string.Concat(currentFileChunks.Where(c => c != null));
+            currentFileMessage.FileUrl = $"data:{currentFileMessage.FileMimeType};base64,{base64Data}";
+            currentFileMessage.IsReceiving = false;
+            currentFileMessage.Progress = 100;
+
+            currentFileChunks.Clear();
+            currentFileMessage = null;
+
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "File processing failed");
+        }
+    }
+
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(newMessage) || selectedUserId == null) return;
+
+        try
+        {
+            await _webRTCService.SendMessageAsync(selectedUserId, newMessage);
+
+            if (!chatMessages.ContainsKey(selectedUserId))
+                chatMessages[selectedUserId] = new List<ChatMessage>();
+
+            chatMessages[selectedUserId].Add(new ChatMessage
+            {
+                Text = newMessage,
+                IsFromMe = true,
+                IsFile = false,
+                Timestamp = DateTime.Now
+            });
+
+            newMessage = string.Empty;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = ex.Message;
+            Logger.LogError(ex, "Failed to send message");
+        }
+    }
+
+    private async Task SendFile()
+    {
+        if (_selectedFile == null) return;
+
+        try
+        {
+            await _webRTCService.SendFileAsync(_targetUserId!, _selectedFile);
+            _selectedFile = null;
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = ex.Message;
         }
     }
 
@@ -202,34 +395,33 @@
         try
         {
             var file = e.File;
-            if (file == null) return;
-
             var message = new ChatMessage
             {
+                Text = $"Sending file: {file.Name}",
                 IsFromMe = true,
                 IsFile = true,
                 FileName = file.Name,
-                Progress = 0
+                FileSize = file.Size,
+                FileMimeType = file.ContentType,
+                Timestamp = DateTime.Now
             };
+
+            var messages = GetCurrentMessages();
             messages.Add(message);
 
-            await WebRTCService.SendFileAsync(file);
+            await _webRTCService.SendFileAsync(_targetUserId!, file);
 
             var fileStream = file.OpenReadStream(maxAllowedSize: 10485760); // 10MB
             var ms = new MemoryStream();
             await fileStream.CopyToAsync(ms);
             var base64 = Convert.ToBase64String(ms.ToArray());
             message.FileUrl = $"data:{file.ContentType};base64,{base64}";
-
-            StateHasChanged();
         }
         catch (Exception ex)
         {
-            Logger.LogError(ex, "Error sending file");
+            _errorMessage = ex.Message;
         }
     }
-
-    private ChatMessage? currentFileMessage;
 
     private void HandleFileReceiveStarted(FileMetadata metadata)
     {
@@ -245,6 +437,7 @@
                 FileSize = metadata.Size,
                 FileMimeType = metadata.MimeType
             };
+            var messages = GetCurrentMessages();
             messages.Add(currentFileMessage);
             currentFileChunks.Clear();
             StateHasChanged();
@@ -302,25 +495,39 @@
 
     public void Dispose()
     {
-        WebRTCService.OnMessageReceived -= HandleMessageReceived;
-        WebRTCService.OnConnectionEstablished -= HandleWebRTCConnected;
-        WebRTCService.OnFileReceiveStarted -= HandleFileReceiveStarted;
-        WebRTCService.OnFileChunkReceived -= HandleFileChunk;
-        WebRTCService.OnFileReceiveCompleted -= HandleFileReceiveCompleted;
-        SignalRService.UserIdChanged -= HandleUserIdChanged;  // Отписываемся
+        _webRTCService.OnMessageReceived -= HandleMessageReceived;
+        _webRTCService.OnConnectionEstablished -= HandleWebRTCConnected;
+        _webRTCService.OnConnectionClosed -= HandleWebRTCClosed;
+        _webRTCService.OnFileReceiveStarted -= HandleFileReceiveStarted;
+        _webRTCService.OnFileChunkReceived -= HandleFileChunk;
+        _webRTCService.OnFileReceiveCompleted -= HandleFileReceiveCompleted;
+        SignalRService.UserIdChanged -= HandleUserIdChanged;
         currentFileChunks.Clear();
     }
 
-    private class ChatMessage
+    private async Task SwitchChat(string chatId)
     {
-        public string Text { get; set; } = "";
-        public bool IsFromMe { get; set; }
-        public bool IsFile { get; set; }
-        public string? FileName { get; set; }
-        public string? FileUrl { get; set; }
-        public bool IsReceiving { get; set; }
-        public int Progress { get; set; }
-        public long FileSize { get; set; }
-        public string FileMimeType { get; set; } = "";
+        if (selectedUserId == chatId) return;
+
+        await HandleDisconnect();
+        selectedUserId = chatId;
+        targetUserId = chatId;
+        await _webRTCService.StartConnection(chatId, true);
+    }
+
+    private async Task RemoveChat(string chatId)
+    {
+        activeChats.Remove(chatId);
+        await SaveActiveChats();
+
+        if (selectedUserId == chatId)
+        {
+            await HandleDisconnect();
+        }
+    }
+
+    private async Task SaveActiveChats()
+    {
+        await JS.InvokeVoidAsync("localStorage.setItem", "activeChats", string.Join(",", activeChats));
     }
 }

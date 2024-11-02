@@ -1,6 +1,5 @@
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.AspNetCore.Components;
-using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Http.Connections;
 using P2PChat.Shared.Models;
 using Microsoft.JSInterop;
@@ -19,7 +18,7 @@ public class SignalRService : IAsyncDisposable
     public event Action? UserIdChanged;
     public SignalMessage? CurrentSignal { get; private set; }
     public event Action<string>? OnConnected;
-    public event Action<SignalMessage>? OnSignalReceived;
+    public event Func<SignalMessage, Task>? OnSignalReceived;
     public event Action<string>? OnUserConnected;
 
     public SignalRService(
@@ -102,12 +101,12 @@ public class SignalRService : IAsyncDisposable
         }
     }
 
-    private void HandleSignalReceived(SignalMessage signal)
+    private async void HandleSignalReceived(SignalMessage signal)
     {
         try
         {
             CurrentSignal = signal;
-            OnSignalReceived?.Invoke(signal);
+            await InvokeSignalReceived(signal);
         }
         catch (Exception ex)
         {
@@ -132,6 +131,14 @@ public class SignalRService : IAsyncDisposable
                 _userId = value;
                 UserIdChanged?.Invoke();
             }
+        }
+    }
+
+    private async Task InvokeSignalReceived(SignalMessage signal)
+    {
+        if (OnSignalReceived != null)
+        {
+            await OnSignalReceived.Invoke(signal);
         }
     }
 }
