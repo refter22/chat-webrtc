@@ -13,7 +13,7 @@
             <input type="text"
                    @bind="connectToId"
                    placeholder="Enter user ID" />
-            <button @onclick="async () => await ViewModel.Connect(connectToId)">
+            <button @onclick="async () => await ViewModel.HandleConnect(connectToId)">
                 Connect
             </button>
         </div>
@@ -23,19 +23,27 @@
         <ChatSidebar
             ActiveChats="@ViewModel.ActiveChats"
             SelectedUserId="@ViewModel.SelectedUserId"
-            OnChatSelected="@ViewModel.SwitchChat" />
+            OnChatSelected="@(userId => ViewModel.HandleSelectChat(userId))" />
 
         @if (ViewModel.SelectedUserId != null)
         {
             <div class="chat-main">
                 <div class="chat-header">
                     <h3>Chat with user @ViewModel.SelectedUserId</h3>
+                    @if (ViewModel.IsWebRTCConnected)
+                    {
+                        <span class="connection-status connected">Connected</span>
+                    }
+                    else
+                    {
+                        <span class="connection-status disconnected">Disconnected</span>
+                    }
                 </div>
 
                 <ChatMessages Messages="@ViewModel.GetCurrentMessages()" />
 
                 <div class="chat-controls">
-                    <MessageInput OnSend="@ViewModel.SendMessage" />
+                    <MessageInput OnSend="@ViewModel.HandleSendMessage" />
                     <FileUpload OnFileSelected="@ViewModel.HandleFileSelected" />
                 </div>
             </div>
@@ -52,7 +60,14 @@
     {
         <div class="error-message">
             @ViewModel.ErrorMessage
-            <button @onclick="@(() => ViewModel.ErrorMessage = null)">✕</button>
+            <button @onclick="@ViewModel.ClearError">✕</button>
+        </div>
+    }
+
+    @if (ViewModel.IsLoading)
+    {
+        <div class="loading-overlay">
+            <div class="spinner"></div>
         </div>
     }
 </div>

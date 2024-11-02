@@ -1,165 +1,92 @@
 using Microsoft.AspNetCore.Components.Forms;
-using Microsoft.JSInterop;
 using P2PChat.Client.Models;
-using P2PChat.Client.Services;
-using P2PChat.Client.Services.WebRTC;
+using P2PChat.Client.Store;
 
 namespace P2PChat.Client.ViewModels;
 
 public class ChatViewModel : IDisposable
 {
-    private readonly WebRTCService _webRTCService;
-    private readonly SignalRService _signalRService;
+    private readonly IChatStore _store;
     private readonly ILogger<ChatViewModel> _logger;
-    private readonly FileTransferManager _fileTransferManager;
-    private readonly IJSRuntime _jsRuntime;
     private string? _errorMessage;
-    private HashSet<string> _activeChats = new();
-    public IReadOnlySet<string> ActiveChats => _activeChats;
-    public Dictionary<string, List<ChatMessage>> ChatMessages { get; } = new();
-    public string? SelectedUserId { get; private set; }
-    public bool IsWebRTCConnected { get; private set; }
-    public string NewMessage { get; set; } = "";
+
     public string? ErrorMessage
     {
         get => _errorMessage;
-        set
+        private set
         {
             _errorMessage = value;
             NotifyStateChanged();
         }
     }
-    public string? MyUserId => _signalRService.UserId;
-    public bool IsConnected => _signalRService.IsConnected;
+
+    public bool IsLoading { get; private set; }
+    public string? MyUserId => _store.MyUserId;
+    public bool IsConnected => _store.IsConnected;
+    public IReadOnlySet<string> ActiveChats => _store.State.ActiveChats;
+    public string? SelectedUserId => _store.State.SelectedChatId;
+    public bool IsWebRTCConnected => _store.State.ConnectionStates.TryGetValue(SelectedUserId ?? "", out var connected) && connected;
+
     public event Action? StateChanged;
 
-    public ChatViewModel(
-        WebRTCService webRTCService,
-        SignalRService signalRService,
-        ILogger<ChatViewModel> logger,
-        FileTransferManager fileTransferManager,
-        IJSRuntime jsRuntime)
+    public ChatViewModel(IChatStore store, ILogger<ChatViewModel> logger)
     {
-        _webRTCService = webRTCService;
-        _signalRService = signalRService;
+        _store = store;
         _logger = logger;
-        _fileTransferManager = fileTransferManager;
-        _jsRuntime = jsRuntime;
-
-        _webRTCService.OnMessageReceived += HandleMessageReceived;
-        _webRTCService.OnConnectionEstablished += HandleWebRTCConnected;
-        _webRTCService.OnConnectionClosed += HandleWebRTCClosed;
-        _signalRService.UserIdChanged += HandleUserIdChanged;
-        _fileTransferManager.OnFileMessageCreated += HandleFileMessageCreated;
-        _fileTransferManager.StateChanged += HandleFileTransferStateChanged;
+        _store.StateChanged += HandleStoreChanged;
     }
 
     public async Task Initialize()
     {
         try
         {
-            var savedChats = await _jsRuntime.InvokeAsync<string>("localStorage.getItem", "activeChats");
-            if (!string.IsNullOrEmpty(savedChats))
-            {
-                _activeChats = new HashSet<string>(savedChats.Split(','));
-                _logger.LogInformation($"Loaded {_activeChats.Count} saved chats");
-            }
-
-            await _signalRService.StartAsync();
-            NotifyStateChanged();
+            IsLoading = true;
+            await _store.WaitForInitialization();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to initialize chat");
             ErrorMessage = "Failed to initialize chat";
+            _logger.LogError(ex, "Failed to initialize chat");
         }
-    }
-
-    public List<ChatMessage> GetCurrentMessages()
-    {
-        if (string.IsNullOrEmpty(SelectedUserId))
-            return new List<ChatMessage>();
-
-        if (!ChatMessages.ContainsKey(SelectedUserId))
-            ChatMessages[SelectedUserId] = new List<ChatMessage>();
-
-        return ChatMessages[SelectedUserId];
-    }
-
-    public async Task Connect(string targetUserId)
-    {
-        if (string.IsNullOrWhiteSpace(targetUserId)) return;
-
-        if (targetUserId == MyUserId)
+        finally
         {
-            _logger.LogWarning("Cannot connect to self");
-            ErrorMessage = "Cannot connect to yourself";
-            return;
+            IsLoading = false;
         }
+    }
 
+    public List<ChatMessage> GetCurrentMessages() =>
+        _store.State.Messages.TryGetValue(SelectedUserId ?? "", out var messages)
+            ? messages
+            : new List<ChatMessage>();
+
+    public async Task HandleConnect(string userId)
+    {
         try
         {
-            SelectedUserId = targetUserId;
-            _activeChats.Add(targetUserId);
-            await SaveActiveChats();
-
-            IsWebRTCConnected = false;
-            await _webRTCService.StartConnection(targetUserId, true);
-            NotifyStateChanged();
+            IsLoading = true;
+            await _store.Connect(userId);
         }
         catch (Exception ex)
         {
+            ErrorMessage = "Failed to connect";
             _logger.LogError(ex, "Connection failed");
-            ErrorMessage = "Connection failed";
-            SelectedUserId = null;
-            _activeChats.Remove(targetUserId);
-            await SaveActiveChats();
-            NotifyStateChanged();
+        }
+        finally
+        {
+            IsLoading = false;
         }
     }
 
-    private void NotifyStateChanged() => StateChanged?.Invoke();
-
-    public void Dispose()
+    public async Task HandleSendMessage(string message)
     {
-        _webRTCService.OnMessageReceived -= HandleMessageReceived;
-        _webRTCService.OnConnectionEstablished -= HandleWebRTCConnected;
-        _webRTCService.OnConnectionClosed -= HandleWebRTCClosed;
-        _signalRService.UserIdChanged -= HandleUserIdChanged;
-
-        _fileTransferManager.OnFileMessageCreated -= HandleFileMessageCreated;
-        _fileTransferManager.StateChanged -= HandleFileTransferStateChanged;
-    }
-
-    public async Task SendMessage(string message)
-    {
-        if (string.IsNullOrWhiteSpace(message) || SelectedUserId == null) return;
-
         try
         {
-            _logger.LogInformation($"Sending message to {SelectedUserId}: {message}");
-            await _webRTCService.SendMessageAsync(SelectedUserId, message);
-
-            if (!ChatMessages.ContainsKey(SelectedUserId))
-            {
-                ChatMessages[SelectedUserId] = new List<ChatMessage>();
-            }
-
-            ChatMessages[SelectedUserId].Add(new ChatMessage
-            {
-                Text = message,
-                IsFromMe = true,
-                IsFile = false,
-                Timestamp = DateTime.Now
-            });
-
-            NotifyStateChanged();
+            await _store.SendMessage(message);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to send message");
             ErrorMessage = "Failed to send message";
-            NotifyStateChanged();
+            _logger.LogError(ex, "Failed to send message");
         }
     }
 
@@ -167,113 +94,39 @@ public class ChatViewModel : IDisposable
     {
         try
         {
-            if (SelectedUserId == null)
-            {
-                ErrorMessage = "Please select a chat before sending a file";
-                NotifyStateChanged();
-                return;
-            }
-
-            if (file.Size > 100 * 1024 * 1024) // 100MB
-            {
-                ErrorMessage = "File size exceeds maximum allowed size of 100MB";
-                NotifyStateChanged();
-                return;
-            }
-
-            await _webRTCService.SendFileAsync(SelectedUserId, file);
+            await _store.SendFile(file);
         }
         catch (Exception ex)
         {
             ErrorMessage = ex.Message;
             _logger.LogError(ex, "Failed to handle file selection");
-            NotifyStateChanged();
         }
     }
 
-    private void HandleMessageReceived(string userId, string message)
+    public async Task HandleSelectChat(string userId)
     {
-        if (!ChatMessages.ContainsKey(userId))
+        try
         {
-            ChatMessages[userId] = new List<ChatMessage>();
+            await _store.SelectChat(userId);
         }
-
-        ChatMessages[userId].Add(new ChatMessage
+        catch (Exception ex)
         {
-            Text = message,
-            IsFromMe = false,
-            Timestamp = DateTime.Now
-        });
-
-        NotifyStateChanged();
-    }
-
-    private void HandleWebRTCConnected(string userId)
-    {
-        IsWebRTCConnected = true;
-        NotifyStateChanged();
-    }
-
-    private void HandleWebRTCClosed(string userId)
-    {
-        IsWebRTCConnected = false;
-        NotifyStateChanged();
-    }
-
-    private void HandleUserIdChanged(string? userId)
-    {
-        NotifyStateChanged();
-    }
-
-    private async Task SaveActiveChats()
-    {
-        await _jsRuntime.InvokeVoidAsync("localStorage.setItem", "activeChats", string.Join(",", _activeChats));
-    }
-
-    public async Task SwitchChat(string chatId)
-    {
-        if (SelectedUserId == chatId) return;
-
-        await Disconnect();
-        SelectedUserId = chatId;
-        await Connect(chatId);
-    }
-
-    public async Task RemoveChat(string chatId)
-    {
-        _activeChats.Remove(chatId);
-        await SaveActiveChats();
-
-        if (SelectedUserId == chatId)
-        {
-            await Disconnect();
+            ErrorMessage = "Failed to select chat";
+            _logger.LogError(ex, "Failed to select chat");
         }
     }
 
-    public async Task Disconnect()
+    private void HandleStoreChanged() => NotifyStateChanged();
+
+    private void NotifyStateChanged() => StateChanged?.Invoke();
+
+    public void Dispose()
     {
-        if (SelectedUserId != null)
-        {
-            await _webRTCService.CloseConnection(SelectedUserId);
-            SelectedUserId = null;
-            IsWebRTCConnected = false;
-            NotifyStateChanged();
-        }
+        _store.StateChanged -= HandleStoreChanged;
     }
 
-    private void HandleFileMessageCreated(string userId, ChatMessage message)
+    public void ClearError()
     {
-        if (!ChatMessages.ContainsKey(userId))
-        {
-            ChatMessages[userId] = new List<ChatMessage>();
-        }
-
-        ChatMessages[userId].Add(message);
-        NotifyStateChanged();
-    }
-
-    private void HandleFileTransferStateChanged()
-    {
-        NotifyStateChanged();
+        ErrorMessage = null;
     }
 }
