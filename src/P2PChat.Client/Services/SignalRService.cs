@@ -12,7 +12,8 @@ public class SignalRService : IAsyncDisposable
     private HubConnection? _hubConnection;
     private readonly NavigationManager _navigationManager;
     private readonly ILogger<SignalRService> _logger;
-    public string? UserId { get; private set; }
+    private string? _userId;
+    public event Action? UserIdChanged;
     public SignalMessage? CurrentSignal { get; private set; }
     public event Action<string>? OnConnected;
     public event Action<SignalMessage>? OnSignalReceived;
@@ -42,11 +43,7 @@ public class SignalRService : IAsyncDisposable
             .WithAutomaticReconnect()
             .Build();
 
-        _hubConnection.On<string>("Registered", userId =>
-        {
-            UserId = userId;
-            OnConnected?.Invoke(userId);
-        });
+        _hubConnection.On<string>("Registered", HandleRegistered);
 
         _hubConnection.On<string>("UserConnected", userId =>
         {
@@ -105,6 +102,25 @@ public class SignalRService : IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error handling signal");
+        }
+    }
+
+    private void HandleRegistered(string userId)
+    {
+        UserId = userId;
+        OnConnected?.Invoke(userId);
+    }
+
+    public string? UserId
+    {
+        get => _userId;
+        private set
+        {
+            if (_userId != value)
+            {
+                _userId = value;
+                UserIdChanged?.Invoke();
+            }
         }
     }
 }

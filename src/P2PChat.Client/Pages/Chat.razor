@@ -101,12 +101,19 @@
             WebRTCService.OnFileChunkReceived += HandleFileChunk;
             WebRTCService.OnFileReceiveCompleted += HandleFileReceiveCompleted;
 
+            SignalRService.UserIdChanged += HandleUserIdChanged;
+
             await SignalRService.StartAsync();
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"Failed to connect: {ex.Message}");
         }
+    }
+
+    private void HandleUserIdChanged()
+    {
+        StateHasChanged();
     }
 
     private async Task HandleConnectClick()
@@ -289,6 +296,7 @@
         WebRTCService.OnFileReceiveStarted -= HandleFileReceiveStarted;
         WebRTCService.OnFileChunkReceived -= HandleFileChunk;
         WebRTCService.OnFileReceiveCompleted -= HandleFileReceiveCompleted;
+        SignalRService.UserIdChanged -= HandleUserIdChanged;  // Отписываемся
         currentFileChunks.Clear();
     }
 
