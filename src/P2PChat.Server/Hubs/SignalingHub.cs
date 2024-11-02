@@ -4,7 +4,7 @@ using P2PChat.Shared.Models;
 
 namespace P2PChat.Server.Hubs;
 
-public class SignalingHub : Hub
+public class SignalingHub : Hub<ISignalingClient>
 {
     private readonly ILogger<SignalingHub> _logger;
     private readonly IConnectionManager _connectionManager;
@@ -17,26 +17,31 @@ public class SignalingHub : Hub
         _connectionManager = connectionManager;
     }
 
-    public async Task Register()
+    public override async Task OnConnectedAsync()
     {
-        var userId = Guid.NewGuid().ToString();
-        _connectionManager.AddConnection(userId, Context.ConnectionId);
+        _logger.LogInformation("Client connected: {ConnectionId}", Context.ConnectionId);
+        await base.OnConnectedAsync();
+    }
 
-        _logger.LogInformation("User registered: {UserId}", userId);
-
-        await Clients.Caller.SendAsync("Registered", userId);
-        _logger.LogInformation("Sent Registered event to user: {UserId}", userId);
-
-        await Clients.Others.SendAsync("UserConnected", userId);
-        _logger.LogInformation("Sent UserConnected event for user: {UserId}", userId);
-
-        var connectedUsers = _connectionManager.GetAllUsers().ToList();
-        _logger.LogInformation("Current connected users: {Users}", string.Join(", ", connectedUsers));
-
-        foreach (var existingUser in connectedUsers.Where(u => u != userId))
+    [HubMethodName("Register")]
+    public async Task Register(string? existingUserId = null)
+    {
+        try
         {
-            await Clients.Caller.SendAsync("UserConnected", existingUser);
-            _logger.LogInformation("Sent existing user {ExistingUser} to new user {NewUser}", existingUser, userId);
+            _logger.LogInformation("Register called for connection {ConnectionId}", Context.ConnectionId);
+
+            var userId = existingUserId ?? Guid.NewGuid().ToString();
+            _connectionManager.AddConnection(userId, Context.ConnectionId);
+
+            _logger.LogInformation("Sending userId {UserId} to client", userId);
+            await Clients.Caller.Registered(userId);
+
+            _logger.LogInformation("Register completed for {UserId}", userId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in Register method");
+            throw;
         }
     }
 
@@ -60,7 +65,7 @@ public class SignalingHub : Hub
 
         if (targetConnectionId != null)
         {
-            await Clients.Client(targetConnectionId).SendAsync("ReceiveSignal", signal);
+            await Clients.Client(targetConnectionId).ReceiveSignal(signal);
             _logger.LogInformation(
                 "Signal {SignalType} successfully relayed: {FromUserId} -> {TargetUserId}",
                 signal.Type, fromUserId, targetUserId);

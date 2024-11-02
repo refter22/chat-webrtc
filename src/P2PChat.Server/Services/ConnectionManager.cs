@@ -1,13 +1,13 @@
 using System.Collections.Generic;
 using Microsoft.Extensions.Logging;
 using P2PChat.Server.Services.Interfaces;
+using P2PChat.Server.Collections;
 
 namespace P2PChat.Server.Services;
 
 public class ConnectionManager : IConnectionManager
 {
-    private readonly Dictionary<string, string> _userConnections = new();
-    private readonly Dictionary<string, string> _connectionUsers = new();
+    private readonly BiDictionary<string, string> _connections = new();
     private readonly ILogger<ConnectionManager> _logger;
 
     public ConnectionManager(ILogger<ConnectionManager> logger)
@@ -17,44 +17,21 @@ public class ConnectionManager : IConnectionManager
 
     public void AddConnection(string userId, string connectionId)
     {
-        _userConnections[userId] = connectionId;
-        _connectionUsers[connectionId] = userId;
-        _logger.LogInformation("Added connection mapping: User {UserId} -> Connection {ConnectionId}",
-            userId, connectionId);
+        _connections.Add(userId, connectionId);
+        _logger.LogInformation("Connection added: {UserId} -> {ConnectionId}", userId, connectionId);
     }
 
-    public string? GetConnectionId(string userId)
-    {
-        if (_userConnections.TryGetValue(userId, out var connectionId))
-        {
-            return connectionId;
-        }
-        _logger.LogWarning("Connection ID not found for user {UserId}", userId);
-        return null;
-    }
+    public string? GetConnectionId(string userId) =>
+        _connections.TryGetValue(userId, out var connectionId) ? connectionId : null;
 
-    public string? GetUserId(string connectionId)
-    {
-        if (_connectionUsers.TryGetValue(connectionId, out var userId))
-        {
-            return userId;
-        }
-        _logger.LogWarning("User ID not found for connection {ConnectionId}", connectionId);
-        return null;
-    }
+    public string? GetUserId(string connectionId) =>
+        _connections.TryGetByValue(connectionId, out var userId) ? userId : null;
 
     public void RemoveConnection(string connectionId)
     {
-        if (_connectionUsers.TryGetValue(connectionId, out var userId))
+        if (_connections.RemoveByValue(connectionId))
         {
-            _userConnections.Remove(userId);
-            _connectionUsers.Remove(connectionId);
-            _logger.LogInformation("Removed connection mapping for User {UserId}", userId);
+            _logger.LogInformation("Connection removed: {ConnectionId}", connectionId);
         }
-    }
-
-    public IEnumerable<string> GetAllUsers()
-    {
-        return _userConnections.Keys.ToList();
     }
 }

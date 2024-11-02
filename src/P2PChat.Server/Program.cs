@@ -4,7 +4,10 @@ using P2PChat.Server.Services.Interfaces;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddSignalR();
+builder.Services.AddSignalR(options =>
+{
+    options.EnableDetailedErrors = true;
+});
 
 builder.Services.AddSingleton<IConnectionManager, ConnectionManager>();
 
