@@ -10,9 +10,6 @@ public class WebRTCService : IAsyncDisposable
     private readonly SignalRService _signalRService;
     private readonly WebRTCState _state;
     private readonly ILogger<WebRTCService> _logger;
-    private IJSObjectReference? _webRTCModule;
-    private DotNetObjectReference<WebRTCService>? _dotNetRef;
-
     public event Action<string>? OnMessageReceived;
     public event Action? OnConnectionEstablished;
     public event Action? OnConnectionClosed;

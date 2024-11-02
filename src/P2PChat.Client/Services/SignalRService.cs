@@ -3,32 +3,42 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Http.Connections;
 using P2PChat.Shared.Models;
+using Microsoft.JSInterop;
 
 namespace P2PChat.Client.Services;
 
 public class SignalRService : IAsyncDisposable
 {
     private readonly IConfiguration _configuration;
-    private HubConnection? _hubConnection;
     private readonly NavigationManager _navigationManager;
     private readonly ILogger<SignalRService> _logger;
+    private readonly IJSRuntime _jsRuntime;
+    private HubConnection? _hubConnection;
     private string? _userId;
+
     public event Action? UserIdChanged;
     public SignalMessage? CurrentSignal { get; private set; }
     public event Action<string>? OnConnected;
     public event Action<SignalMessage>? OnSignalReceived;
     public event Action<string>? OnUserConnected;
 
-    public SignalRService(IConfiguration configuration, NavigationManager navigationManager, ILogger<SignalRService> logger)
+    public SignalRService(
+        IConfiguration configuration,
+        NavigationManager navigationManager,
+        ILogger<SignalRService> logger,
+        IJSRuntime jsRuntime)
     {
         _configuration = configuration;
         _navigationManager = navigationManager;
         _logger = logger;
+        _jsRuntime = jsRuntime;
     }
 
     public async Task StartAsync()
     {
         if (_hubConnection != null) return;
+
+        var existingUserId = await _jsRuntime.InvokeAsync<string?>("localStorage.getItem", "userId");
 
         var hubUrl = Environment.GetEnvironmentVariable("SIGNALR_HUB_URL")
             ?? _configuration["SIGNALR_HUB_URL"]
@@ -55,7 +65,7 @@ public class SignalRService : IAsyncDisposable
         try
         {
             await _hubConnection.StartAsync();
-            await _hubConnection.InvokeAsync("Register", (string?)null);
+            await _hubConnection.InvokeAsync("Register", existingUserId);
         }
         catch (Exception ex)
         {
@@ -105,9 +115,10 @@ public class SignalRService : IAsyncDisposable
         }
     }
 
-    private void HandleRegistered(string userId)
+    private async void HandleRegistered(string userId)
     {
         UserId = userId;
+        await _jsRuntime.InvokeVoidAsync("localStorage.setItem", "userId", userId);
         OnConnected?.Invoke(userId);
     }
 

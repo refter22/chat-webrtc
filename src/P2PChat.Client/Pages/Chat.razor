@@ -6,6 +6,7 @@
 @inject WebRTCService WebRTCService
 @inject SignalRService SignalRService
 @inject ILogger<Chat> Logger
+@inject IJSRuntime JS
 
 <div class="chat-container">
     @if (!SignalRService.IsConnected)
@@ -100,14 +101,21 @@
             WebRTCService.OnFileReceiveStarted += HandleFileReceiveStarted;
             WebRTCService.OnFileChunkReceived += HandleFileChunk;
             WebRTCService.OnFileReceiveCompleted += HandleFileReceiveCompleted;
-
             SignalRService.UserIdChanged += HandleUserIdChanged;
 
             await SignalRService.StartAsync();
+
+            var savedTargetId = await JS.InvokeAsync<string?>("localStorage.getItem", "targetUserId");
+            if (!string.IsNullOrEmpty(savedTargetId))
+            {
+                selectedUserId = savedTargetId;
+                targetUserId = savedTargetId;
+                await WebRTCService.StartConnection(savedTargetId, true);
+            }
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Failed to connect: {ex.Message}");
+            Logger.LogError(ex, "Failed to initialize chat");
         }
     }
 
@@ -131,22 +139,25 @@
             selectedUserId = targetUserId;
             messages.Clear();
             isWebRTCConnected = false;
+            await JS.InvokeVoidAsync("localStorage.setItem", "targetUserId", targetUserId);
             await WebRTCService.StartConnection(targetUserId, true);
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Connection failed");
             selectedUserId = null;
+            await JS.InvokeVoidAsync("localStorage.removeItem", "targetUserId");
         }
     }
 
-    private void HandleDisconnect()
+    private async Task HandleDisconnect()
     {
         selectedUserId = null;
         targetUserId = "";
         messages.Clear();
         isWebRTCConnected = false;
-        WebRTCService.DisposeAsync().AsTask().Wait();
+        await JS.InvokeVoidAsync("localStorage.removeItem", "targetUserId");
+        await WebRTCService.DisposeAsync();
     }
 
     private void HandleMessageReceived(string message)
