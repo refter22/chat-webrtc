@@ -58,7 +58,7 @@ public class SignalRService : IAsyncDisposable
         try
         {
             await _hubConnection.StartAsync();
-            await _hubConnection.InvokeAsync("Register");
+            await _hubConnection.InvokeAsync("Register", (string?)null);
         }
         catch (Exception ex)
         {

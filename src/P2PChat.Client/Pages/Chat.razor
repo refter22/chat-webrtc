@@ -16,28 +16,30 @@
     }
     else if (string.IsNullOrEmpty(selectedUserId))
     {
-        <div class="user-list">
-            <h3>Connected Users (@(connectedUsers.Where(u => u != SignalRService.UserId).Count()))</h3>
-            @if (!connectedUsers.Any(u => u != SignalRService.UserId))
-            {
-                <p>Waiting for other users to connect...</p>
-            }
-            else
-            {
-                <div class="users">
-                    @foreach (var user in connectedUsers.Where(u => u != SignalRService.UserId))
-                    {
-                        <button class="user-item" @onclick="() => HandleUserClick(user)">
-                            Chat with @user
-                        </button>
-                    }
-                </div>
-            }
+        <div class="connection-form">
+            <h3>Your ID: @SignalRService.UserId</h3>
+            <p>Share this ID with someone to start chatting</p>
+
+            <div class="connect-to-user">
+                <input @bind="targetUserId" placeholder="Enter user ID to connect..." />
+                <button @onclick="HandleConnectClick" disabled="@(targetUserId == SignalRService.UserId)">
+                    Connect
+                </button>
+                @if (targetUserId == SignalRService.UserId)
+                {
+                    <div class="error-message">Cannot connect to yourself</div>
+                }
+            </div>
         </div>
     }
     else
     {
         <div class="chat">
+            <div class="chat-header">
+                <span>Chatting with: @selectedUserId</span>
+                <button @onclick="HandleDisconnect">Disconnect</button>
+            </div>
+
             <div class="messages">
                 @foreach (var message in messages)
                 {
@@ -57,7 +59,7 @@
                                 }
                                 @if (message.FileUrl != null)
                                 {
-                                    <a href="@message.FileUrl" download="@message.FileName">Скачать</a>
+                                    <a href="@message.FileUrl" download="@message.FileName">Download</a>
                                 }
                             </div>
                         }
@@ -68,37 +70,37 @@
                     </div>
                 }
             </div>
+
             <div class="input-area">
                 <InputFile OnChange="HandleFileSelected" class="file-input" />
                 <input @bind="newMessage" @bind:event="oninput" @onkeyup="HandleKeyPress" />
-                <button @onclick="SendMessage">Send</button>
+                <button @onclick="SendMessage" disabled="@(!isWebRTCConnected)">Send</button>
             </div>
         </div>
     }
 </div>
 
 @code {
-    private HashSet<string> connectedUsers = new();
+    private string targetUserId = "";
     private string? selectedUserId;
+    private bool isWebRTCConnected;
     private List<ChatMessage> messages = new();
     private string newMessage = "";
-    private bool isWebRTCConnected;
     private List<string?> currentFileChunks = new();
     private int expectedChunks = 0;
 
+    private string? myUserId => SignalRService.UserId;
+
     protected override async Task OnInitializedAsync()
     {
-        SignalRService.OnConnected += HandleConnected;
-        SignalRService.OnUserConnected += HandleUserConnected;
-        SignalRService.OnSignalReceived += HandleSignalReceived;
-        WebRTCService.OnMessageReceived += HandleMessageReceived;
-        WebRTCService.OnConnectionEstablished += HandleWebRTCConnected;
-        WebRTCService.OnFileReceiveStarted += HandleFileReceiveStarted;
-        WebRTCService.OnFileChunkReceived += HandleFileChunk;
-        WebRTCService.OnFileReceiveCompleted += HandleFileReceiveCompleted;
-
         try
         {
+            WebRTCService.OnMessageReceived += HandleMessageReceived;
+            WebRTCService.OnConnectionEstablished += HandleWebRTCConnected;
+            WebRTCService.OnFileReceiveStarted += HandleFileReceiveStarted;
+            WebRTCService.OnFileChunkReceived += HandleFileChunk;
+            WebRTCService.OnFileReceiveCompleted += HandleFileReceiveCompleted;
+
             await SignalRService.StartAsync();
         }
         catch (Exception ex)
@@ -107,49 +109,37 @@
         }
     }
 
-    private void HandleConnected(string userId)
+    private async Task HandleConnectClick()
     {
-        connectedUsers.Add(userId);
-        StateHasChanged();
-    }
+        if (string.IsNullOrWhiteSpace(targetUserId)) return;
 
-    private void HandleUserConnected(string userId)
-    {
-        if (!connectedUsers.Contains(userId))
+        if (targetUserId == SignalRService.UserId)
         {
-            connectedUsers.Add(userId);
-            StateHasChanged();
+            Logger.LogWarning("Cannot connect to self");
+            return;
         }
-    }
 
-    private async Task HandleUserClick(string userId)
-    {
         try
         {
-            selectedUserId = userId;
-
-            if (WebRTCService.IsConnected && WebRTCService.TargetUserId != userId)
-            {
-                await WebRTCService.DisposeAsync();
-            }
-
-            if (!WebRTCService.IsConnected || WebRTCService.TargetUserId != userId)
-            {
-                messages.Clear();
-                isWebRTCConnected = false;
-                await WebRTCService.StartConnection(userId, true);
-            }
+            selectedUserId = targetUserId;
+            messages.Clear();
+            isWebRTCConnected = false;
+            await WebRTCService.StartConnection(targetUserId, true);
         }
         catch (Exception ex)
         {
-            Logger.LogError(ex, "Failed to start chat with user: {UserId}", userId);
+            Logger.LogError(ex, "Connection failed");
             selectedUserId = null;
         }
     }
 
-    private void HandleSignalReceived(SignalMessage signal)
+    private void HandleDisconnect()
     {
-        Console.WriteLine($"Received signal: {signal.Type}");
+        selectedUserId = null;
+        targetUserId = "";
+        messages.Clear();
+        isWebRTCConnected = false;
+        WebRTCService.DisposeAsync().AsTask().Wait();
     }
 
     private void HandleMessageReceived(string message)
@@ -168,12 +158,6 @@
     {
         if (string.IsNullOrWhiteSpace(newMessage)) return;
 
-        if (!isWebRTCConnected)
-        {
-            Logger.LogWarning("Cannot send message: WebRTC not connected");
-            return;
-        }
-
         try
         {
             await WebRTCService.SendMessageAsync(newMessage);
@@ -183,7 +167,7 @@
         }
         catch (Exception ex)
         {
-            Logger.LogError(ex, "Failed to send message");
+            Logger.LogWarning("Cannot send message: {Error}", ex.Message);
         }
     }
 
@@ -233,8 +217,6 @@
     {
         try
         {
-            Logger.LogInformation($"File receive started: {metadata.Name}, size: {metadata.Size}");
-
             currentFileMessage = new ChatMessage
             {
                 IsFromMe = false,
@@ -251,7 +233,7 @@
         }
         catch (Exception ex)
         {
-            Logger.LogError(ex, "Error starting file receive");
+            Logger.LogError(ex, "File receive failed");
         }
     }
 
@@ -274,7 +256,7 @@
         }
         catch (Exception ex)
         {
-            Logger.LogError(ex, "Error receiving file chunk");
+            Logger.LogError(ex, "File chunk processing failed");
         }
     }
 
@@ -293,11 +275,10 @@
             currentFileMessage = null;
 
             StateHasChanged();
-            Logger.LogInformation("File processing completed successfully");
         }
         catch (Exception ex)
         {
-            Logger.LogError(ex, "Error during file processing");
+            Logger.LogError(ex, "File processing failed");
         }
     }
 
@@ -305,9 +286,6 @@
     {
         WebRTCService.OnMessageReceived -= HandleMessageReceived;
         WebRTCService.OnConnectionEstablished -= HandleWebRTCConnected;
-        SignalRService.OnConnected -= HandleConnected;
-        SignalRService.OnUserConnected -= HandleUserConnected;
-        SignalRService.OnSignalReceived -= HandleSignalReceived;
         WebRTCService.OnFileReceiveStarted -= HandleFileReceiveStarted;
         WebRTCService.OnFileChunkReceived -= HandleFileChunk;
         WebRTCService.OnFileReceiveCompleted -= HandleFileReceiveCompleted;

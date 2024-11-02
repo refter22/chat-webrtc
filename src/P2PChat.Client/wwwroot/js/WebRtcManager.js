@@ -28,43 +28,40 @@ class WebRTCManager {
         };
 
         channel.onmessage = async (event) => {
-            try {
-                const data = JSON.parse(event.data);
+            const data = event.data;
 
-                if (data.type === 'file-chunk') {
+            if (typeof data === 'string' && data.startsWith('{')) {
+                const jsonData = JSON.parse(data);
+
+                if (jsonData.type === 'file-chunk') {
                     this.handleChunkReceived(
-                        data.data,
-                        data.index + 1,
-                        data.total
+                        jsonData.data,
+                        jsonData.index + 1,
+                        jsonData.total
                     );
                     await this.dotNetRef.invokeMethodAsync(
                         'HandleFileChunk',
-                        data
+                        jsonData
                     );
-                } else if (data.type === 'file-end') {
+                } else if (jsonData.type === 'file-end') {
                     await this.handleFileReceived();
                     await this.dotNetRef.invokeMethodAsync('HandleFileEnd');
-                } else if (data.checksum) {
+                } else if (jsonData.checksum) {
                     this.fileMetadata = {
-                        name: data.name,
-                        size: data.size,
-                        type: data.type,
-                        checksum: data.checksum
+                        name: jsonData.name,
+                        size: jsonData.size,
+                        type: jsonData.type,
+                        checksum: jsonData.checksum
                     };
                     this.fileChunks = [];
                     this.totalChunks = 0;
                     await this.dotNetRef.invokeMethodAsync(
                         'HandleFileStart',
-                        data
-                    );
-                } else {
-                    await this.dotNetRef.invokeMethodAsync(
-                        'HandleWebRTCMessage',
-                        event.data
+                        jsonData
                     );
                 }
-            } catch (error) {
-                console.error('Message processing error:', error);
+            } else {
+                await this.dotNetRef.invokeMethodAsync('HandleWebRTCMessage', data);
             }
         };
     }

@@ -110,8 +110,6 @@ code {
   color: #c02d76;
 }
 
-/* Добавьте в конец файла */
-
 .logs {
   background-color: #f8f9fa;
   padding: 1rem;
@@ -124,10 +122,19 @@ code {
 }
 
 .connection-status {
-  padding: 1rem;
-  background-color: #e9ecef;
+  font-size: 0.8em;
+  padding: 4px 8px;
   border-radius: 4px;
-  margin-bottom: 1rem;
+}
+
+.connection-status.connected {
+  background-color: #4caf50;
+  color: white;
+}
+
+.connection-status.connecting {
+  background-color: #ff9800;
+  color: white;
 }
 
 .messages {
@@ -203,4 +210,33 @@ code {
 
 .file-input {
   margin-right: 8px;
+}
+
+.connection-form {
+  text-align: center;
+  padding: 20px;
+}
+
+.connect-to-user {
+  margin-top: 20px;
+}
+
+.connect-to-user input {
+  padding: 8px;
+  margin-right: 10px;
+}
+
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px;
+  background-color: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+}
+
+.error-message {
+  color: #dc3545;
+  margin-top: 8px;
+  font-size: 14px;
 }
