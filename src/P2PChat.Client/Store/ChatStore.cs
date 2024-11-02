@@ -56,6 +56,21 @@ public class ChatStore : IChatStore, IAsyncDisposable
             {
                 _state = savedState;
                 _logger.LogInformation("Chat state loaded from storage");
+
+                foreach (var userId in _state.ActiveChats)
+                {
+                    if (_state.ConnectionStates.TryGetValue(userId, out var isConnected) && isConnected)
+                    {
+                        try
+                        {
+                            await _webRTCService.StartConnection(userId, true);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Failed to restore connection with {UserId}", userId);
+                        }
+                    }
+                }
             }
 
             await _signalRService.StartAsync();

@@ -15,14 +15,16 @@ public class FileTransferManager
 
     private class FileTransferState
     {
+        public string UserId { get; set; } = null!;
         public FileMetadata Metadata { get; set; } = null!;
-        public List<string?> Chunks { get; set; } = new();
+        public List<byte[]> Chunks { get; set; } = new();
         public ChatMessage Message { get; set; } = null!;
+        public int ReceivedChunks { get; set; }
         public int TotalChunks { get; set; }
     }
 
-    public event Action<string, ChatMessage> OnFileMessageCreated = null!;
-    public event Action StateChanged = null!;
+    public event Action<string, ChatMessage>? OnFileMessageCreated;
+    public event Action? StateChanged;
 
     public FileTransferManager(IJSRuntime jsRuntime, ILogger<FileTransferManager> logger)
     {
@@ -39,13 +41,6 @@ public class FileTransferManager
                 throw new InvalidOperationException($"File size exceeds maximum allowed size of {MaxFileSize / 1024 / 1024}MB");
             }
 
-            var metadata = new FileMetadata
-            {
-                Name = file.Name,
-                Size = file.Size,
-                MimeType = file.ContentType
-            };
-
             var message = new ChatMessage
             {
                 IsFromMe = true,
@@ -53,19 +48,26 @@ public class FileTransferManager
                 FileName = file.Name,
                 FileSize = file.Size,
                 FileMimeType = file.ContentType,
-                Timestamp = DateTime.Now
+                Timestamp = DateTime.Now,
+                Progress = 0
             };
 
             OnFileMessageCreated?.Invoke(targetUserId, message);
 
+            var metadata = new FileMetadata
+            {
+                Name = file.Name,
+                Size = file.Size,
+                MimeType = file.ContentType
+            };
+
             var metadataJson = JsonSerializer.Serialize(new { type = "file-start", metadata });
             await SendData(connection, metadataJson);
 
+            using var stream = file.OpenReadStream(maxAllowedSize: MaxFileSize);
             var buffer = new byte[ChunkSize];
             var totalChunks = (int)Math.Ceiling(file.Size / (double)ChunkSize);
             var currentChunk = 0;
-
-            using var stream = file.OpenReadStream(maxAllowedSize: file.Size);
 
             while (true)
             {
@@ -86,18 +88,14 @@ public class FileTransferManager
                 StateChanged?.Invoke();
 
                 currentChunk++;
-                if (currentChunk < totalChunks)
-                    await Task.Delay(50);
             }
-
-            using var ms = new MemoryStream();
-            stream.Position = 0;
-            await stream.CopyToAsync(ms);
-            message.FileUrl = $"data:{file.ContentType};base64,{Convert.ToBase64String(ms.ToArray())}";
 
             var endJson = JsonSerializer.Serialize(new { type = "file-end" });
             await SendData(connection, endJson);
 
+            using var ms = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: MaxFileSize).CopyToAsync(ms);
+            message.FileUrl = $"data:{file.ContentType};base64,{Convert.ToBase64String(ms.ToArray())}";
             message.Progress = 100;
             StateChanged?.Invoke();
         }
@@ -124,41 +122,45 @@ public class FileTransferManager
             IsFromMe = false,
             IsFile = true,
             FileName = metadata.Name,
-            IsReceiving = true,
-            Progress = 0,
             FileSize = metadata.Size,
             FileMimeType = metadata.MimeType,
+            IsReceiving = true,
+            Progress = 0,
             Timestamp = DateTime.Now
         };
 
-        _transfers[userId] = new FileTransferState
+        var state = new FileTransferState
         {
+            UserId = userId,
             Metadata = metadata,
             Message = message,
-            Chunks = new List<string?>()
+            Chunks = new List<byte[]>(),
+            TotalChunks = (int)Math.Ceiling(metadata.Size / (double)ChunkSize)
         };
 
+        _transfers[userId] = state;
         OnFileMessageCreated?.Invoke(userId, message);
-        _logger.LogInformation($"Started receiving file: {metadata.Name}");
     }
 
     public void HandleFileChunk(string userId, FileChunk chunk)
     {
         if (!_transfers.TryGetValue(userId, out var state))
         {
-            _logger.LogError("No file transfer in progress");
+            _logger.LogError("No file transfer in progress for user {UserId}", userId);
             return;
         }
 
+        var data = Convert.FromBase64String(chunk.Data);
+
         while (state.Chunks.Count <= chunk.Index)
         {
-            state.Chunks.Add(null);
+            state.Chunks.Add(Array.Empty<byte>());
         }
 
-        state.Chunks[chunk.Index] = chunk.Data;
-        state.TotalChunks = chunk.Total;
+        state.Chunks[chunk.Index] = data;
+        state.ReceivedChunks++;
 
-        state.Message.Progress = (int)((double)state.Chunks.Count(c => c != null) / chunk.Total * 100);
+        state.Message.Progress = (int)((double)state.ReceivedChunks / chunk.Total * 100);
         StateChanged?.Invoke();
     }
 
@@ -166,12 +168,17 @@ public class FileTransferManager
     {
         if (!_transfers.TryGetValue(userId, out var state))
         {
-            _logger.LogError("No file transfer in progress");
+            _logger.LogError("No file transfer in progress for user {UserId}", userId);
             return;
         }
 
-        var base64Data = string.Concat(state.Chunks.Where(c => c != null));
-        state.Message.FileUrl = $"data:{state.Message.FileMimeType};base64,{base64Data}";
+        using var ms = new MemoryStream();
+        foreach (var chunk in state.Chunks)
+        {
+            ms.Write(chunk);
+        }
+
+        state.Message.FileUrl = $"data:{state.Message.FileMimeType};base64,{Convert.ToBase64String(ms.ToArray())}";
         state.Message.IsReceiving = false;
         state.Message.Progress = 100;
 
