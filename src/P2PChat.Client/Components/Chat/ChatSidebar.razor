@@ -1,0 +1,53 @@
+@inject ILogger<ChatSidebar> Logger
+
+<div class="chat-sidebar">
+    <div class="sidebar-header">
+        Active chats
+    </div>
+
+    @if (ActiveChats == null || !ActiveChats.Any())
+    {
+        <div class="no-chats">
+            No active chats
+        </div>
+    }
+    else
+    {
+        <div class="chats-list">
+            @foreach (var userId in ActiveChats)
+            {
+                <div class="chat-item @(userId == SelectedUserId ? "selected" : "")"
+                     @onclick="() => OnChatClicked(userId)">
+                    <div class="chat-name">
+                        @($"User {userId}")
+                    </div>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter]
+    public IEnumerable<string> ActiveChats { get; set; } = new List<string>();
+
+    [Parameter]
+    public string? SelectedUserId { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnChatSelected { get; set; }
+
+    private async Task OnChatClicked(string userId)
+    {
+        try
+        {
+            Logger.LogInformation("Chat selected: {UserId}", userId);
+            await OnChatSelected.InvokeAsync(userId);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error selecting chat");
+            throw;
+        }
+    }
+}

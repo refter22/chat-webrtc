@@ -1,0 +1,73 @@
+@using P2PChat.Client.Models
+@inject ILogger<ChatMessages> Logger
+
+<div class="chat-messages" @ref="_messagesContainer">
+    @if (Messages == null || !Messages.Any())
+    {
+        <div class="no-messages">
+            No messages
+        </div>
+    }
+    else
+    {
+        @foreach (var message in Messages)
+        {
+            <div class="message @(message.IsFromMe ? "message-out" : "message-in")">
+                @if (message.IsFile)
+                {
+                    <div class="file-message">
+                        <div class="file-info">
+                            <span class="file-name">@message.FileName</span>
+                            <span class="file-size">(@(message.FileSize / 1024.0)KB)</span>
+                        </div>
+                        @if (message.IsReceiving)
+                        {
+                            <div class="progress">
+                                <div class="progress-bar" style="width: @(message.Progress)%">
+                                    @(message.Progress)%
+                                </div>
+                            </div>
+                        }
+                        else if (!string.IsNullOrEmpty(message.FileUrl))
+                        {
+                            <a href="@message.FileUrl" download="@message.FileName" class="download-link">
+                                Download
+                            </a>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="message-content">@message.Text</div>
+                }
+                <div class="message-time">
+                    @message.Timestamp.ToString("HH:mm")
+                </div>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    private ElementReference _messagesContainer;
+
+    [Parameter]
+    public IEnumerable<ChatMessage>? Messages { get; set; }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        try
+        {
+            await ScrollToBottom();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error scrolling to bottom");
+        }
+    }
+
+    private async Task ScrollToBottom()
+    {
+        await _messagesContainer.FocusAsync();
+    }
+}

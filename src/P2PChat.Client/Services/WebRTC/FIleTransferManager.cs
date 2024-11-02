@@ -5,30 +5,40 @@ using System.Text.Json;
 
 namespace P2PChat.Client.Services.WebRTC;
 
-internal class FileTransferManager
+public class FileTransferManager
 {
     private readonly IJSRuntime _jsRuntime;
-    private readonly ILogger _logger;
+    private readonly ILogger<FileTransferManager> _logger;
     private readonly Dictionary<string, FileTransferState> _transfers = new();
     private const int ChunkSize = 16384; // 16KB chunks
+    private const int MaxFileSize = 100 * 1024 * 1024; // 100MB
 
     private class FileTransferState
     {
-        public FileMetadata? Metadata { get; set; }
-        public List<byte[]> Chunks { get; set; } = new();
+        public FileMetadata Metadata { get; set; } = null!;
+        public List<string?> Chunks { get; set; } = new();
+        public ChatMessage Message { get; set; } = null!;
         public int TotalChunks { get; set; }
     }
 
-    public FileTransferManager(IJSRuntime jsRuntime, ILogger logger)
+    public event Action<string, ChatMessage> OnFileMessageCreated = null!;
+    public event Action StateChanged = null!;
+
+    public FileTransferManager(IJSRuntime jsRuntime, ILogger<FileTransferManager> logger)
     {
         _jsRuntime = jsRuntime;
         _logger = logger;
     }
 
-    public async Task SendFile(string targetUserId, IBrowserFile file)
+    public async Task SendFile(string targetUserId, IBrowserFile file, IJSObjectReference connection)
     {
         try
         {
+            if (file.Size > MaxFileSize)
+            {
+                throw new InvalidOperationException($"File size exceeds maximum allowed size of {MaxFileSize / 1024 / 1024}MB");
+            }
+
             var metadata = new FileMetadata
             {
                 Name = file.Name,
@@ -36,18 +46,28 @@ internal class FileTransferManager
                 MimeType = file.ContentType
             };
 
-            var success = await _jsRuntime.InvokeAsync<bool>("webrtc.sendData",
-                targetUserId,
-                JsonSerializer.Serialize(new { type = "file-start", metadata }));
+            var message = new ChatMessage
+            {
+                IsFromMe = true,
+                IsFile = true,
+                FileName = file.Name,
+                FileSize = file.Size,
+                FileMimeType = file.ContentType,
+                Timestamp = DateTime.Now
+            };
 
-            if (!success) throw new Exception("Failed to send file metadata");
+            OnFileMessageCreated?.Invoke(targetUserId, message);
 
-            using var stream = file.OpenReadStream(maxAllowedSize: 100_000_000); // 100MB max
+            var metadataJson = JsonSerializer.Serialize(new { type = "file-start", metadata });
+            await SendData(connection, metadataJson);
+
             var buffer = new byte[ChunkSize];
             var totalChunks = (int)Math.Ceiling(file.Size / (double)ChunkSize);
             var currentChunk = 0;
 
-            while (currentChunk < totalChunks)
+            using var stream = file.OpenReadStream(maxAllowedSize: file.Size);
+
+            while (true)
             {
                 var bytesRead = await stream.ReadAsync(buffer);
                 if (bytesRead == 0) break;
@@ -59,70 +79,103 @@ internal class FileTransferManager
                     Total = totalChunks
                 };
 
-                success = await _jsRuntime.InvokeAsync<bool>("webrtc.sendData",
-                    targetUserId,
-                    JsonSerializer.Serialize(new { type = "file-chunk", chunk }));
+                var chunkJson = JsonSerializer.Serialize(new { type = "file-chunk", chunk });
+                await SendData(connection, chunkJson);
 
-                if (!success) throw new Exception($"Failed to send chunk {currentChunk}");
+                message.Progress = (int)((currentChunk + 1.0) / totalChunks * 100);
+                StateChanged?.Invoke();
 
                 currentChunk++;
+                if (currentChunk < totalChunks)
+                    await Task.Delay(50);
             }
 
-            success = await _jsRuntime.InvokeAsync<bool>("webrtc.sendData",
-                targetUserId,
-                JsonSerializer.Serialize(new { type = "file-end" }));
+            using var ms = new MemoryStream();
+            stream.Position = 0;
+            await stream.CopyToAsync(ms);
+            message.FileUrl = $"data:{file.ContentType};base64,{Convert.ToBase64String(ms.ToArray())}";
 
-            if (!success) throw new Exception("Failed to send file end signal");
+            var endJson = JsonSerializer.Serialize(new { type = "file-end" });
+            await SendData(connection, endJson);
+
+            message.Progress = 100;
+            StateChanged?.Invoke();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error sending file {FileName}", file.Name);
+            _logger.LogError(ex, "Error sending file");
             throw;
         }
     }
 
-    public void HandleFileStart(string targetUserId, FileMetadata metadata)
+    private async Task SendData(IJSObjectReference connection, string data)
     {
-        _transfers[targetUserId] = new FileTransferState
+        var success = await _jsRuntime.InvokeAsync<bool>("webrtc.sendData", connection, data);
+        if (!success)
         {
-            Metadata = metadata,
-            Chunks = new List<byte[]>(),
-            TotalChunks = 0
-        };
+            throw new Exception("Failed to send data");
+        }
     }
 
-    public void HandleFileChunk(string targetUserId, FileChunk chunk)
+    public void HandleFileStart(string userId, FileMetadata metadata)
     {
-        if (!_transfers.TryGetValue(targetUserId, out var state))
+        var message = new ChatMessage
         {
-            throw new InvalidOperationException("File transfer not initialized");
-        }
+            IsFromMe = false,
+            IsFile = true,
+            FileName = metadata.Name,
+            IsReceiving = true,
+            Progress = 0,
+            FileSize = metadata.Size,
+            FileMimeType = metadata.MimeType,
+            Timestamp = DateTime.Now
+        };
 
-        var data = Convert.FromBase64String(chunk.Data);
+        _transfers[userId] = new FileTransferState
+        {
+            Metadata = metadata,
+            Message = message,
+            Chunks = new List<string?>()
+        };
+
+        OnFileMessageCreated?.Invoke(userId, message);
+        _logger.LogInformation($"Started receiving file: {metadata.Name}");
+    }
+
+    public void HandleFileChunk(string userId, FileChunk chunk)
+    {
+        if (!_transfers.TryGetValue(userId, out var state))
+        {
+            _logger.LogError("No file transfer in progress");
+            return;
+        }
 
         while (state.Chunks.Count <= chunk.Index)
         {
-            state.Chunks.Add(null!);
+            state.Chunks.Add(null);
         }
 
-        state.Chunks[chunk.Index] = data;
+        state.Chunks[chunk.Index] = chunk.Data;
         state.TotalChunks = chunk.Total;
+
+        state.Message.Progress = (int)((double)state.Chunks.Count(c => c != null) / chunk.Total * 100);
+        StateChanged?.Invoke();
     }
 
-    public void HandleFileEnd(string targetUserId)
+    public void HandleFileEnd(string userId)
     {
-        if (!_transfers.TryGetValue(targetUserId, out var state))
+        if (!_transfers.TryGetValue(userId, out var state))
         {
-            throw new InvalidOperationException("No file transfer in progress");
+            _logger.LogError("No file transfer in progress");
+            return;
         }
 
-        if (state.Chunks.Count != state.TotalChunks)
-        {
-            throw new InvalidOperationException($"Missing chunks. Expected {state.TotalChunks}, got {state.Chunks.Count}");
-        }
+        var base64Data = string.Concat(state.Chunks.Where(c => c != null));
+        state.Message.FileUrl = $"data:{state.Message.FileMimeType};base64,{base64Data}";
+        state.Message.IsReceiving = false;
+        state.Message.Progress = 100;
 
-        var completeFile = state.Chunks.SelectMany(chunk => chunk).ToArray();
-
-        _transfers.Remove(targetUserId);
+        _transfers.Remove(userId);
+        StateChanged?.Invoke();
     }
 }

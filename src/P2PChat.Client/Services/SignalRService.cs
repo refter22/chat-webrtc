@@ -15,7 +15,7 @@ public class SignalRService : IAsyncDisposable
     private HubConnection? _hubConnection;
     private string? _userId;
 
-    public event Action? UserIdChanged;
+    public event Action<string?>? UserIdChanged;
     public SignalMessage? CurrentSignal { get; private set; }
     public event Action<string>? OnConnected;
     public event Func<SignalMessage, Task>? OnSignalReceived;
@@ -129,7 +129,7 @@ public class SignalRService : IAsyncDisposable
             if (_userId != value)
             {
                 _userId = value;
-                UserIdChanged?.Invoke();
+                UserIdChanged?.Invoke(value);
             }
         }
     }

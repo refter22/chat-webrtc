@@ -1,0 +1,32 @@
+<div class="message-input">
+    <input type="text"
+           @bind="message"
+           @bind:event="oninput"
+           @onkeydown="HandleKeyPress"
+           placeholder="Enter message..." />
+    <button @onclick="SendMessage" disabled="@string.IsNullOrWhiteSpace(message)">
+        Отправить
+    </button>
+</div>
+
+@code {
+    private string message = "";
+
+    [Parameter]
+    public EventCallback<string> OnSend { get; set; }
+
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(message)) return;
+        await OnSend.InvokeAsync(message);
+        message = string.Empty;
+    }
+
+    private async Task HandleKeyPress(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await SendMessage();
+        }
+    }
+}

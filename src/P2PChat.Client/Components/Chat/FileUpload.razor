@@ -1,0 +1,27 @@
+@inject ILogger<FileUpload> Logger
+
+<div class="file-upload">
+    <InputFile OnChange="HandleFileSelected" accept="*/*" />
+</div>
+
+@code {
+    [Parameter]
+    public EventCallback<IBrowserFile> OnFileSelected { get; set; }
+
+    private async Task HandleFileSelected(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            var file = e.File;
+            Logger.LogInformation("File selected: {FileName}, size: {Size} bytes",
+                file.Name, file.Size);
+
+            await OnFileSelected.InvokeAsync(file);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error handling file selection");
+            throw;
+        }
+    }
+}

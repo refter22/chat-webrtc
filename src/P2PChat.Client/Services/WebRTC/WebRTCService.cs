@@ -11,9 +11,9 @@ namespace P2PChat.Client.Services.WebRTC
         private readonly IJSRuntime _jsRuntime;
         private readonly SignalRService _signalRService;
         private readonly ILogger<WebRTCService> _logger;
-        private readonly ConnectionManager _connectionManager;
-        private readonly FileTransferManager _fileManager;
         private readonly DotNetObjectReference<WebRTCService> _dotNetRef;
+        private readonly Dictionary<string, IJSObjectReference> _connections = new();
+        private readonly FileTransferManager _fileTransferManager;
 
         public event Action<string, string>? OnMessageReceived;
         public event Action<string>? OnConnectionEstablished;
@@ -22,20 +22,17 @@ namespace P2PChat.Client.Services.WebRTC
         public event Action<string, FileChunk>? OnFileChunkReceived;
         public event Action<string>? OnFileReceiveCompleted;
 
-        public bool IsConnected => _connectionManager.HasActiveConnections;
-        public string? TargetUserId => _connectionManager.GetActiveConnectionId();
-
         public WebRTCService(
             IJSRuntime jsRuntime,
             SignalRService signalRService,
-            ILogger<WebRTCService> logger)
+            ILogger<WebRTCService> logger,
+            FileTransferManager fileTransferManager)
         {
             _jsRuntime = jsRuntime;
             _signalRService = signalRService;
             _logger = logger;
             _dotNetRef = DotNetObjectReference.Create(this);
-            _connectionManager = new ConnectionManager(_jsRuntime, logger);
-            _fileManager = new FileTransferManager(_jsRuntime, logger);
+            _fileTransferManager = fileTransferManager;
 
             _signalRService.OnSignalReceived += HandleSignalReceived;
         }
@@ -44,7 +41,19 @@ namespace P2PChat.Client.Services.WebRTC
         {
             try
             {
-                await _connectionManager.StartConnection(targetUserId, isInitiator, _dotNetRef);
+                if (_connections.ContainsKey(targetUserId))
+                {
+                    await CloseConnection(targetUserId);
+                }
+
+                var connection = await _jsRuntime.InvokeAsync<IJSObjectReference>(
+                    "webrtc.createConnection",
+                    _dotNetRef,
+                    targetUserId
+                );
+
+                _connections[targetUserId] = connection;
+
                 if (isInitiator)
                 {
                     await CreateAndSendOffer(targetUserId);
@@ -59,7 +68,12 @@ namespace P2PChat.Client.Services.WebRTC
 
         private async Task CreateAndSendOffer(string targetUserId)
         {
-            var offer = await _jsRuntime.InvokeAsync<object>("webrtc.createOffer", targetUserId);
+            if (!_connections.TryGetValue(targetUserId, out var connection))
+            {
+                throw new InvalidOperationException($"No connection found for {targetUserId}");
+            }
+
+            var offer = await _jsRuntime.InvokeAsync<object>("webrtc.createOffer", connection);
             await _signalRService.SendSignalAsync(targetUserId, new SignalMessage
             {
                 Type = SignalType.Offer,
@@ -70,6 +84,8 @@ namespace P2PChat.Client.Services.WebRTC
 
         private async Task HandleSignalReceived(SignalMessage signal)
         {
+            if (signal.FromUserId == null) return;
+
             try
             {
                 switch (signal.Type)
@@ -78,65 +94,87 @@ namespace P2PChat.Client.Services.WebRTC
                         await HandleOffer(signal);
                         break;
                     case SignalType.Answer:
-                        await _jsRuntime.InvokeVoidAsync("webrtc.handleAnswer", signal.FromUserId, signal.Data);
+                        if (_connections.TryGetValue(signal.FromUserId, out var conn))
+                        {
+                            await _jsRuntime.InvokeVoidAsync("webrtc.handleAnswer", conn, signal.Data);
+                        }
                         break;
                     case SignalType.IceCandidate:
-                        await _jsRuntime.InvokeVoidAsync("webrtc.addIceCandidate", signal.FromUserId, signal.Data);
+                        if (_connections.TryGetValue(signal.FromUserId, out conn))
+                        {
+                            await _jsRuntime.InvokeVoidAsync("webrtc.addIceCandidate", conn, signal.Data);
+                        }
                         break;
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error handling signal of type {Type}", signal.Type);
-                throw;
             }
         }
 
         private async Task HandleOffer(SignalMessage signal)
         {
-            await StartConnection(signal.FromUserId!, false);
-            var answer = await _jsRuntime.InvokeAsync<object>("webrtc.handleOffer", signal.FromUserId, signal.Data);
-            await _signalRService.SendSignalAsync(signal.FromUserId!, new SignalMessage
+            if (signal.FromUserId == null) return;
+
+            await StartConnection(signal.FromUserId, false);
+
+            if (_connections.TryGetValue(signal.FromUserId, out var connection))
             {
-                Type = SignalType.Answer,
-                Data = answer,
-                FromUserId = _signalRService.UserId
-            });
+                var answer = await _jsRuntime.InvokeAsync<object>("webrtc.handleOffer", connection, signal.Data);
+                await _signalRService.SendSignalAsync(signal.FromUserId, new SignalMessage
+                {
+                    Type = SignalType.Answer,
+                    Data = answer,
+                    FromUserId = _signalRService.UserId
+                });
+            }
         }
 
         public async Task SendMessageAsync(string targetUserId, string message)
         {
-            if (!_connectionManager.IsConnected(targetUserId))
+            try
             {
-                throw new InvalidOperationException($"No active WebRTC connection with {targetUserId}");
+                if (!_connections.TryGetValue(targetUserId, out var connection))
+                {
+                    _logger.LogError($"No connection found for {targetUserId}");
+                    throw new InvalidOperationException($"No connection found for {targetUserId}");
+                }
+
+                var data = JsonSerializer.Serialize(new { type = "message", content = message });
+                _logger.LogInformation($"Sending data to {targetUserId}: {data}");
+
+                var success = await _jsRuntime.InvokeAsync<bool>("webrtc.sendData", connection, data);
+
+                if (!success)
+                {
+                    _logger.LogError($"Failed to send message to {targetUserId}");
+                    throw new InvalidOperationException("Failed to send message");
+                }
+
+                _logger.LogInformation($"Message sent successfully to {targetUserId}");
             }
-
-            var messageData = new { type = "message", content = message };
-            var success = await _jsRuntime.InvokeAsync<bool>(
-                "webrtc.sendData",
-                targetUserId,
-                JsonSerializer.Serialize(messageData));
-
-            if (!success)
+            catch (Exception ex)
             {
-                throw new InvalidOperationException("Failed to send message");
+                _logger.LogError(ex, $"Error sending message to {targetUserId}");
+                throw;
             }
         }
 
         public async Task SendFileAsync(string targetUserId, IBrowserFile file)
         {
-            if (!_connectionManager.IsConnected(targetUserId))
+            if (!_connections.TryGetValue(targetUserId, out var connection))
             {
-                throw new InvalidOperationException($"No active WebRTC connection with {targetUserId}");
+                throw new InvalidOperationException($"No connection found for {targetUserId}");
             }
 
-            await _fileManager.SendFile(targetUserId, file);
+            await _fileTransferManager.SendFile(targetUserId, file, connection);
         }
 
         [JSInvokable]
         public Task HandleConnectionOpened(string targetUserId)
         {
-            _connectionManager.SetConnectionState(targetUserId, true);
+            _logger.LogInformation("Connection opened with {UserId}", targetUserId);
             OnConnectionEstablished?.Invoke(targetUserId);
             return Task.CompletedTask;
         }
@@ -144,7 +182,7 @@ namespace P2PChat.Client.Services.WebRTC
         [JSInvokable]
         public Task HandleConnectionClosed(string targetUserId)
         {
-            _connectionManager.SetConnectionState(targetUserId, false);
+            _logger.LogInformation("Connection closed with {UserId}", targetUserId);
             OnConnectionClosed?.Invoke(targetUserId);
             return Task.CompletedTask;
         }
@@ -154,32 +192,31 @@ namespace P2PChat.Client.Services.WebRTC
         {
             try
             {
-                _logger.LogInformation("Received data from {UserId}: {Data}", targetUserId, data);
                 var message = JsonSerializer.Deserialize<JsonElement>(data);
+                var messageType = message.GetProperty("type").GetString();
+                _logger.LogInformation($"Received data type: {messageType} from {targetUserId}");
 
-                switch (message.GetProperty("type").GetString())
+                switch (messageType)
                 {
                     case "message":
                         var content = message.GetProperty("content").GetString()!;
-                        _logger.LogInformation("Received message: {Content}", content);
                         OnMessageReceived?.Invoke(targetUserId, content);
                         break;
 
                     case "file-start":
-                        var metadata = JsonSerializer.Deserialize<FileMetadata>(message.GetProperty("metadata").GetRawText())!;
-                        _fileManager.HandleFileStart(targetUserId, metadata);
-                        OnFileReceiveStarted?.Invoke(targetUserId, metadata);
+                        var metadata = JsonSerializer.Deserialize<FileMetadata>(
+                            message.GetProperty("metadata").GetRawText())!;
+                        _fileTransferManager.HandleFileStart(targetUserId, metadata);
                         break;
 
                     case "file-chunk":
-                        var chunk = JsonSerializer.Deserialize<FileChunk>(message.GetProperty("chunk").GetRawText())!;
-                        _fileManager.HandleFileChunk(targetUserId, chunk);
-                        OnFileChunkReceived?.Invoke(targetUserId, chunk);
+                        var chunk = JsonSerializer.Deserialize<FileChunk>(
+                            message.GetProperty("chunk").GetRawText())!;
+                        _fileTransferManager.HandleFileChunk(targetUserId, chunk);
                         break;
 
                     case "file-end":
-                        _fileManager.HandleFileEnd(targetUserId);
-                        OnFileReceiveCompleted?.Invoke(targetUserId);
+                        _fileTransferManager.HandleFileEnd(targetUserId);
                         break;
                 }
             }
@@ -202,9 +239,22 @@ namespace P2PChat.Client.Services.WebRTC
             });
         }
 
+        public async Task CloseConnection(string targetUserId)
+        {
+            if (_connections.TryGetValue(targetUserId, out var connection))
+            {
+                await _jsRuntime.InvokeVoidAsync("webrtc.closeConnection", connection);
+                await connection.DisposeAsync();
+                _connections.Remove(targetUserId);
+            }
+        }
+
         public async ValueTask DisposeAsync()
         {
-            await _connectionManager.DisposeAllConnections();
+            foreach (var targetUserId in _connections.Keys.ToList())
+            {
+                await CloseConnection(targetUserId);
+            }
             _signalRService.OnSignalReceived -= HandleSignalReceived;
             _dotNetRef.Dispose();
         }
